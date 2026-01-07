@@ -1,0 +1,24 @@
+# Build outputs
+Debug/
+Release/
+*/Debug/
+*/Release/
+
+# GCC/Linker artifacts
+*.o
+*.a
+*.d
+*.elf
+*.map
+*.hex
+*.bin
+*.lst
+*.su
+
+# IDE / generated
+.settings/
+*.launch
+
+# OS junk
+.DS_Store
+Thumbs.db
