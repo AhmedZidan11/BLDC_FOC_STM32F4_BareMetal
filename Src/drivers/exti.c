@@ -2,7 +2,9 @@
  * @file exti.c
  * @brief EXTI module implementation (STM32F4, CMSIS only).
  *
- *  EXTI configuration is implemented here with all needed bitfield math
+ *  EXTI line configuration + callback registration + dispatcher (CMSIS)
+ *  Maps GPIO pin to EXTI line via SYSCFG, configures trigger and NVIC
+ *
  */
 
 #include "drivers/exti.h"
@@ -14,8 +16,8 @@ static void *callbk_arg_array[16] = {0};
 /* Configure EXTI-registers */
 bool exti_init(const exti_cfg_t *cfg)
 {
-	if (cfg == NULL) return false;								// invalid cfg instant
-	if (cfg->gpio_cfg->mode != GPIO_MODE_INPUT) return false;	// GPIO need to be configured as INPUT first
+	if (cfg == NULL) return false;								// invalid cfg pointer
+	if (cfg->gpio_cfg->mode != GPIO_MODE_INPUT) return false;	// Requires GPIO input mode (EXTI is edge/level on input pin)
 	if(!gpio_init_pin(cfg->gpio_cfg)) return false;				// gpio_init failed
 
 

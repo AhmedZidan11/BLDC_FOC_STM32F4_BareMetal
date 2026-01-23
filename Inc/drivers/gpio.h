@@ -8,7 +8,11 @@
  *
  * Provides registers configuration and simple I/O read/write tasks
  *
- * Responsibilities: init, read, write, toggle for I/O pins
+ * Responsibilities:
+ * - Configure GPIO registers
+ * - Read digital input
+ * - Set/reset digital output
+ * - toggle digital output
  *
  * @note For ADC and AF use this module to configure GPIO pins
  */
@@ -103,9 +107,9 @@ typedef struct {
 } gpio_pin_cfg_t;
 
 /**
- * @brief Configure a defined GPIO pin according to a cfg-instant.
+ * @brief Configure a GPIO pin according to the given instance.
  *
- * @param cfg: Pointer to the pin configuration instant.
+ * @param cfg Pointer to the pin configuration instance.
  * @return true if applied, false if parameters invalid.
  */
 bool gpio_init_pin(const gpio_pin_cfg_t *cfg);
@@ -113,22 +117,22 @@ bool gpio_init_pin(const gpio_pin_cfg_t *cfg);
 /**
  * @brief Set/Reset a defined output GPIO pin via BSRR
  *
- * @param pin: contain port and pin information
- * @param level: true for High, false for Low
+ * @param pin contain port and pin information
+ * @param level true for High, false for Low
  */
 void gpio_write(gpio_pin_t pin, bool level);
 
 /**
  * @brief toggle a defined output GPIO pin
  *
- * @param pin: contain port and pin information
+ * @param pin contain port and pin information
  */
 void gpio_toggle(gpio_pin_t pin);
 
 /**
  * @brief read the level of a defined input GPIO pin
  *
- * @param pin: contain port and pin information
+ * @param pin contain port and pin information
  * @return true for High, false for Low or invalid pin definition
  */
 bool gpio_read(gpio_pin_t pin);

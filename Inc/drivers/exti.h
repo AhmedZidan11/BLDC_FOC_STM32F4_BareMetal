@@ -43,9 +43,9 @@ typedef struct {
 }exti_cfg_t;
 
 /**
- * @brief Configure a defined EXTI according to a cfg-instant.
+ * @brief Configure an EXTI line according to the given instance.
  *
- * @param cfg: Pointer to the EXTI configuration instant.
+ * @param cfg Pointer to the EXTI configuration instance.
  * @return true if applied, false if parameters invalid.
  */
 bool exti_init(const exti_cfg_t *cfg);
@@ -54,9 +54,9 @@ bool exti_init(const exti_cfg_t *cfg);
  * @brief Assign a callback function to the corresponding element of a callback_array
  * 		  Based on EXTI-line
  *
- * @param line: Number of EXTI_line
- * @param callbk: handler of a callback function
- * @param callbk_arg: a Pointer to callback_arguments
+ * @param line Number of EXTI_line
+ * @param callbk handler of a callback function
+ * @param callbk_arg a Pointer to callback_arguments
  * @return
  */
 bool exti_register(uint8_t line, exti_callback_t callbk, void *callbk_arg);
@@ -64,8 +64,8 @@ bool exti_register(uint8_t line, exti_callback_t callbk, void *callbk_arg);
 /**
  * @brief Dispatch a corresponding call function for pending external interrupt
  *
- * @param first: first line in EXTI
- * @param last: last line in EXTI
+ * @param first first line in EXTI
+ * @param last last line in EXTI
  *
  * Example: EXTI_1: first = 1, last = 1
  * 			EXTI_15_10: first = 10, last = 15

@@ -1,10 +1,3 @@
-/*
- * system_init.c
- *
- *  Created on: Dec 20, 2025
- *      Author: Zidan
- */
-
 
 #include "stm32f4xx.h"
 

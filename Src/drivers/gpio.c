@@ -3,7 +3,8 @@
  * @file gpio.c
  * @brief GPIO module implementation (STM32F4, CMSIS only).
  *
- *  GPIO configuration is implemented here with all needed bitfield math
+ *  GPIO configuration using direct register access (CMSIS)
+ *  Implements: mode, pull-up/down, speed, output type, alternate function
  */
 
 #include "drivers/gpio.h"
@@ -28,8 +29,8 @@ static inline uint32_t afr_shift(uint8_t pin)   { return (((uint32_t)pin & 7u) *
 /**
  * @brief Apply a mask with:
  *
- * @param width: number of bits
- * @param shift: number of shifts
+ * @param width number of bits
+ * @param shift number of shifts
  * @return resulting mask
  */
 static inline uint32_t field_mask(uint32_t width, uint32_t shift)
@@ -41,7 +42,7 @@ static inline uint32_t field_mask(uint32_t width, uint32_t shift)
 /**
  * @brief Enable corresponding clock for the chosen GPIO Port
  *
- * @param port: instant of GPIO_TypeDef from stm32f4xx.h
+ * @param port instant of GPIO_TypeDef from stm32f4xx.h
  */
 static void gpio_clock_enable(GPIO_TypeDef *port)
 {
@@ -62,8 +63,8 @@ static void gpio_clock_enable(GPIO_TypeDef *port)
 /* Configuration of GPIO registers for a given GPIO pin */
 bool gpio_init_pin(const gpio_pin_cfg_t *cfg)
 {
-    if (cfg == NULL) return false;				// invalid cfg instant
-    if (cfg->pin.port == NULL) return false;	// invalid port instant
+    if (cfg == NULL) return false;				// invalid cfg pointer
+    if (cfg->pin.port == NULL) return false;	// invalid port pointer
     if (!pin_ok(cfg->pin.pin)) return false;	// invalid pin number
 
     gpio_clock_enable(cfg->pin.port);

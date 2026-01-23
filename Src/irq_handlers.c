@@ -7,7 +7,7 @@
 #include "stm32f4xx.h"
 #include "drivers/exti.h"
 
-/* Calling EXTI-Dispatchers with corresponding EXTI_lines*/
+/* IRQ handlers forward EXTI lines to the common dispatcher */
 void EXTI0_IRQHandler(void)      { exti_dispatch(0,0); }
 
 void EXTI1_IRQHandler(void)      { exti_dispatch(1,1); }
