@@ -22,3 +22,11 @@ void EXTI9_5_IRQHandler(void)    { exti_dispatch(5,9); }
 
 void EXTI15_10_IRQHandler(void)  { exti_dispatch(10,15); }
 
+extern adc_handle_t ADC1_IN0_H;
+
+/* ADC EOC-Interrupt, update data in ADC handle */
+void ADC_IRQHandler(void)
+{
+	adc_irq_handler(&ADC1_IN0_H);
+}
+
