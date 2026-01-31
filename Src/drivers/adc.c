@@ -15,11 +15,11 @@ bool adc_init(adc_handle_t *adc_h, const adc_cfg_t *adc_cfg)
 	// Validate input pointers
 	if(adc_h == NULL || adc_cfg == NULL) return false; // invalid handle and cfg instances
 
-	if(adc_h->cfg == NULL || adc_h->inst == NULL) return false; // invalid instances in adc_H
+	if(adc_h->cfg == NULL || adc_h->inst == NULL) return false; // invalid instances in adc_h
 
 	if(adc_cfg->inst == NULL) return false; // invalid instance in adc_cfg
 
-	if(adc_cfg->adc_channel > MAX_CHANNEL) return false; // invalid channel number
+	if(adc_cfg->adc_channel > ADC_CHANNEL_MAX) return false; // invalid channel number
 
 	if(adc_cfg->pin_cfg->mode != GPIO_MODE_ANALOG) return false; // invalid pin mode
 
