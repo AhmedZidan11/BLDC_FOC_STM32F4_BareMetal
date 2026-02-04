@@ -2,7 +2,7 @@
  * @file usart2.c
  * @brief uart2 module implementation (STM32F4, CMSIS only).
  *
- *  Implements USART2 initialization, non-blocking TX/RX using ring buffers, and an ISR handler to be called from USART2_IRQHandler.
+ *  Implements USART2 initialization, non-blocking TX/RX using ring buffers, and an ISR handler to be called from USART2_IRQHandler
  *
  */
 
@@ -11,12 +11,12 @@
 
 
 /**
- * @brief Computation of BRR value based on PCLK frequency and Baud rate.
+ * @brief Computation of BRR value based on PCLK frequency and Baud rate
  *
- * @param usart_cfg Pointer to the USART configuration instance.
- * @return USART_BRR value.
+ * @param usart_cfg Pointer to the USART configuration instance
+ * @return USART_BRR value
  *
- * @note CR1_OVER8 assumed 0.
+ * @note CR1_OVER8 assumed 0
  */
 uint32_t baud_rate_config(const usart2_cfg_t *usart_cfg)
 {
