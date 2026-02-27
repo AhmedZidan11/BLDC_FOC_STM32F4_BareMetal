@@ -9,6 +9,7 @@
 #include "drivers/exti.h"
 #include "drivers/adc.h"
 #include "drivers/usart2.h"
+#include "drivers/systick.h"
 
 /* IRQ handlers forward EXTI lines to the common dispatcher */
 void EXTI0_IRQHandler(void)      { exti_dispatch(0,0); }
@@ -35,3 +36,8 @@ void USART2_IRQHandler(void)
 	usart2_irq_handler(&USART2_H);
 }
 
+/* SYSTICK ISR: updates systick counter */
+void SysTick_Handler()
+{
+	SYSTICK_IrqHandler();
+}
