@@ -35,6 +35,7 @@ void board_init()
 	adc_init(&ADC1_IN0_H, &ADC1_IN0_CFG);
 	usart2_init(&USART2_CFG, &USART2_H);
 	pwm_tim1_init(&PWM_CFG, &PWM_H);
+	SYSTICK_Init(&SYSTICK_CFG, &SYSTICK_H);
 }
 
 void pwm_set_duty_permyriad(pwm_tim1_handle_t* pwm_h, uint8_t ch, uint16_t duty_permyriad)
