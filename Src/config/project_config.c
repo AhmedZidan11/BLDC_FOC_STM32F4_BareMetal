@@ -86,7 +86,7 @@ const gpio_pin_cfg_t PIN_RX = {
 
 /* USART2 configuration for PC connection (ST-LINK VCP) */
 const usart2_cfg_t USART2_CFG = {
-		.irq_priority = 6,
+		.irq_priority = 7,
 		.irqn = USART2_IRQn,
 		.pin_cfg_rx = &PIN_RX,
 		.pin_cfg_tx = &PIN_TX,
@@ -151,4 +151,16 @@ const pwm_tim1_cfg_t PWM_CFG = {
 /* PWM Handle via TIM1 */
 pwm_tim1_handle_t PWM_H = {
 		.arr = 0,
+};
+
+/* SYSTICK configuration. Only one instance can be implemented*/
+const systick_cfg_t SYSTICK_CFG = {
+  .sysclk_hz = APB1_CLK_HZ,
+  .tick_period_us = SYSTICK_PERIOD_US,
+  .irq_prio = 8,
+};
+
+/* SYSTICK Handle */
+systick_handle_t SYSTICK_H = {
+  .tick_count = 0,
 };

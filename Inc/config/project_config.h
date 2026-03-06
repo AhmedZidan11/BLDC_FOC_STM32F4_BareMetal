@@ -17,10 +17,12 @@
 #include "drivers/adc.h"
 #include "drivers/usart2.h"
 #include "drivers/pwm_tim1.h"
+#include "drivers/systick.h"
 
-#define SYSCLK_HZ		16000000u
-#define APB1_CLK_HZ		16000000U				// Adjust based on clock configuration
-#define BAUDRATE		115200U
+#define SYSCLK_HZ				16000000u
+#define APB1_CLK_HZ				16000000U				// Adjust based on clock configuration
+#define BAUDRATE				115200U
+#define SYSTICK_PERIOD_US		1000
 
 extern const gpio_pin_cfg_t LED_OUTPUT;			// User LED (PA5)
 extern const gpio_pin_cfg_t PUSH_BUTTON;		// User Push-button (PC13)
@@ -32,5 +34,7 @@ extern const usart2_cfg_t USART2_CFG;			// USART2 config for PC logging (ST-LINK
 extern usart2_handle_t USART2_H;
 extern const pwm_tim1_cfg_t PWM_CFG;			// TIM1 3-channel PWM configuration
 extern pwm_tim1_handle_t PWM_H;
+extern const systick_cfg_t SYSTICK_CFG;
+extern systick_handle_t SYSTICK_H;
 
 #endif /* DRIVERS_PROJECT_CONFIG_H */
