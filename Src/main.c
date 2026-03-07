@@ -17,9 +17,67 @@
  */
 #include "stm32f446xx.h"
 #include <stdint.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include "drivers/gpio.h"
+#include "config/project_config.h"
+#include "board/board.h"
+#include "drivers/adc.h"
+#include "drivers/log.h"
+
+
+
+extern volatile bool user_button_on;
+//extern pwm_tim1_handle_t PWM_H;
+
+
+extern usart2_handle_t USART2_H;
+
+int __io_putchar(int ch)
+{
+    uint8_t c = (uint8_t)ch;
+    size_t w = usart2_write(&USART2_H, &c, 1u);
+
+    return (w == 1u) ? ch : EOF;
+}
 
 int main(void)
 {
-    /* Loop forever */
-	for(;;);
+
+	board_init(); // drivers initialization
+	log_init(&USART2_H);
+	LOGI("APP", "boot");
+
+	/* Loop forever */
+	while(1)
+	{
+		static uint32_t last_log_ms = 0u;
+		static uint32_t last_data_ms = 0u;
+		static uint32_t sample_cnt = 0u;
+		uint32_t now_ms = SYSTICK_GetTimeMs();
+
+		if ((now_ms - last_log_ms) >= 1000u)
+		{
+			last_log_ms = now_ms;
+
+			/* HB: periodic heartbeat log */
+			LOGI_F("HB", "tx_drop=%u rx_drop=%u ore=%lu",
+				   (unsigned)USART2_H.tx_buffer->drop_cnt,
+				   (unsigned)USART2_H.rx_buffer->drop_cnt,
+				   (unsigned long)USART2_H.err_ore_cnt);
+		}
+
+		if ((now_ms - last_data_ms) >= 100u)
+		{
+			last_data_ms = now_ms;
+			sample_cnt++;
+
+			/* sample_id = 0: logger test sample */
+			log_data_u32(0u,
+						 sample_cnt,
+						 USART2_H.tx_buffer->drop_cnt,
+						 USART2_H.rx_buffer->drop_cnt,
+						 USART2_H.err_ore_cnt);
+		}
+	}
 }

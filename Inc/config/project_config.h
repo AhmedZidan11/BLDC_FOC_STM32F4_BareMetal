@@ -21,7 +21,7 @@
 
 #define SYSCLK_HZ				16000000u
 #define APB1_CLK_HZ				16000000U				// Adjust based on clock configuration
-#define BAUDRATE				115200U
+#define BAUDRATE				230400U
 #define SYSTICK_PERIOD_US		1000
 
 extern const gpio_pin_cfg_t LED_OUTPUT;			// User LED (PA5)
