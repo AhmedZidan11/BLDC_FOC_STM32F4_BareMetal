@@ -10,9 +10,9 @@ Goal: educational reference implementation (not production-ready).
 
 ## Features (planned / in progress)
 
-- [ ] SysTick as a system clock (SysTick)
+- [X] SysTick as a system clock (SysTick)
 - [ ] Speed measurement (AS5600 analog output via ADC)
-- [ ] Logging system (USART)
+- [X] Logging system (USART)
 - [ ] PWM generation + open-loop commutation test (timer)
 - [ ] FOC (no current control in this version) + PI speed controller
 - [ ] Simple user interface (UART CLI)
