@@ -24,7 +24,7 @@
 #include "board/board.h"
 #include "drivers/adc.h"
 #include "drivers/log.h"
-
+#include "motor/motor_6step.h"
 
 
 extern volatile bool user_button_on;
@@ -43,18 +43,41 @@ int __io_putchar(int ch)
 
 int main(void)
 {
+	static const motor_6step_cfg_t MOTOR_6STEP_CFG = {
+		.step_period_ms = 500u,
+		.dir = MOTOR_6STEP_DIR_CW
+	};
+
+	static motor_6step_handle_t motor_6step_h = {0};
 
 	board_init(); // drivers initialization
 	log_init(&USART2_H);
 	LOGI("APP", "boot");
+	motor_6step_init(&motor_6step_h, &MOTOR_6STEP_CFG);
+	motor_6step_start(&motor_6step_h, SYSTICK_GetTimeMs());
+	LOGI("M6", "6-step state machine started");
 
 	/* Loop forever */
 	while(1)
 	{
 		static uint32_t last_log_ms = 0u;
-		static uint32_t last_data_ms = 0u;
-		static uint32_t sample_cnt = 0u;
 		uint32_t now_ms = SYSTICK_GetTimeMs();
+
+		if (motor_6step_update(&motor_6step_h, now_ms))
+		{
+			/* M6: 6-step commutation state machine */
+			LOGI_F("M6", "step=%u dir=%u state=%u",
+				   (unsigned)motor_6step_get_step(&motor_6step_h),
+				   (unsigned)motor_6step_get_dir(&motor_6step_h),
+				   (unsigned)motor_6step_get_state(&motor_6step_h));
+
+			/* sample_id = 1: 6-step state machine sample */
+			log_data_u32(1u,
+						 (uint32_t)motor_6step_get_step(&motor_6step_h),
+						 (uint32_t)motor_6step_get_dir(&motor_6step_h),
+						 (uint32_t)motor_6step_get_state(&motor_6step_h),
+						 MOTOR_6STEP_CFG.step_period_ms);
+		}
 
 		if ((now_ms - last_log_ms) >= 1000u)
 		{
@@ -65,19 +88,6 @@ int main(void)
 				   (unsigned)USART2_H.tx_buffer->drop_cnt,
 				   (unsigned)USART2_H.rx_buffer->drop_cnt,
 				   (unsigned long)USART2_H.err_ore_cnt);
-		}
-
-		if ((now_ms - last_data_ms) >= 100u)
-		{
-			last_data_ms = now_ms;
-			sample_cnt++;
-
-			/* sample_id = 0: logger test sample */
-			log_data_u32(0u,
-						 sample_cnt,
-						 USART2_H.tx_buffer->drop_cnt,
-						 USART2_H.rx_buffer->drop_cnt,
-						 USART2_H.err_ore_cnt);
 		}
 	}
 }
