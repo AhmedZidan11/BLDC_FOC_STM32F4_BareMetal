@@ -5,7 +5,42 @@
  */
 
 #include "motor/motor_6step.h"
+
 #include <stddef.h>
+
+static const motor_6step_phase_map_t MOTOR_6STEP_PHASE_TABLE_CW[6] = {
+	{MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_FLOAT},
+	{MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_LOW},
+	{MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_LOW},
+	{MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_FLOAT},
+	{MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_HIGH},
+	{MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_HIGH}
+};
+
+static const motor_6step_phase_map_t MOTOR_6STEP_PHASE_TABLE_CCW[6] = {
+	{MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_HIGH},
+	{MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_HIGH},
+	{MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_FLOAT},
+	{MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_LOW},
+	{MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_FLOAT, MOTOR_6STEP_PHASE_LOW},
+	{MOTOR_6STEP_PHASE_HIGH,  MOTOR_6STEP_PHASE_LOW,   MOTOR_6STEP_PHASE_FLOAT}
+};
+
+/**
+ * @brief Return safe default phase map.
+ *
+ * @return All phases set to FLOAT.
+ */
+static motor_6step_phase_map_t motor_6step_phase_map_default(void)
+{
+	motor_6step_phase_map_t phase_map = {
+		.phase_a = MOTOR_6STEP_PHASE_FLOAT,
+		.phase_b = MOTOR_6STEP_PHASE_FLOAT,
+		.phase_c = MOTOR_6STEP_PHASE_FLOAT
+	};
+
+	return phase_map;
+}
 
 /**
  * @brief Compute next commutation step based on current step and direction.
@@ -107,3 +142,35 @@ motor_6step_state_t motor_6step_get_state(const motor_6step_handle_t *motor_h)
 
 	return motor_h->state;
 }
+
+motor_6step_phase_map_t motor_6step_get_phase_map(const motor_6step_handle_t *motor_h)
+{
+	motor_6step_phase_map_t phase_map = motor_6step_phase_map_default();
+
+	if ((motor_h == NULL) || (motor_h->cfg == NULL))
+	{
+		return phase_map;
+	}
+
+	if (motor_h->state != MOTOR_6STEP_STATE_RUNNING)
+	{
+		return phase_map;
+	}
+
+	if ((motor_h->current_step < MOTOR_6STEP_STEP_1) ||
+		(motor_h->current_step > MOTOR_6STEP_STEP_6))
+	{
+		return phase_map;
+	}
+
+	/* Convert step enum to zero-based table index. */
+	uint32_t step_idx = (uint32_t)motor_h->current_step - 1u;
+
+	/* Select commutation table according to configured direction. */
+	if (motor_h->cfg->dir == MOTOR_6STEP_DIR_CCW)
+	{
+		return MOTOR_6STEP_PHASE_TABLE_CCW[step_idx];
+	}
+	return MOTOR_6STEP_PHASE_TABLE_CW[step_idx];
+}
+

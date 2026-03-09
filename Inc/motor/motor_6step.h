@@ -12,6 +12,7 @@
  * - store 6-step state machine configuration
  * - track current commutation step
  * - advance step based on elapsed time
+ * - provide current phase commutation map
  */
 
 #include <stdint.h>
@@ -36,6 +37,22 @@ typedef enum {
 	MOTOR_6STEP_STEP_5   = 5,
 	MOTOR_6STEP_STEP_6   = 6
 } motor_6step_step_t;
+
+typedef enum {
+	MOTOR_6STEP_PHASE_FLOAT = 0,
+	MOTOR_6STEP_PHASE_HIGH  = 1,
+	MOTOR_6STEP_PHASE_LOW   = 2
+} motor_6step_phase_state_t;
+
+/**
+ * @brief Commutation state of motor phases.
+ *
+ */
+typedef struct {
+	motor_6step_phase_state_t phase_a;
+	motor_6step_phase_state_t phase_b;
+	motor_6step_phase_state_t phase_c;
+} motor_6step_phase_map_t;
 
 /**
  * @brief 6-step motor configuration.
@@ -116,4 +133,12 @@ motor_6step_dir_t motor_6step_get_dir(const motor_6step_handle_t *motor_h);
  */
 motor_6step_state_t motor_6step_get_state(const motor_6step_handle_t *motor_h);
 
-#endif
+/**
+ * @brief Get current phase commutation state.
+ *
+ * @param motor_h Pointer to motor handle.
+ * @return Current phase map. Invalid/stopped state returns all phases FLOAT.
+ */
+motor_6step_phase_map_t motor_6step_get_phase_map(const motor_6step_handle_t *motor_h);
+
+#endif /* MOTOR_MOTOR_6STEP_H */
