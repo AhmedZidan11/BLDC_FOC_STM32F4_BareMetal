@@ -71,12 +71,12 @@ static motor_6step_step_t motor_6step_next_step(motor_6step_step_t current_step,
 	return (motor_6step_step_t)(current_step - 1);
 }
 
-bool motor_6step_init(motor_6step_handle_t *motor_h, const motor_6step_cfg_t *cfg)
+bool motor_6step_init(motor_6step_handle_t *motor_h, const motor_6step_cfg_t *motor_driver_cfg)
 {
-	if ((motor_h == NULL) || (cfg == NULL)) return false;
-	if (cfg->step_period_ms == 0u) return false;
+	if ((motor_h == NULL) || (motor_driver_cfg == NULL)) return false;
+	if (motor_driver_cfg->step_period_ms == 0u) return false;
 
-	motor_h->cfg = cfg;
+	motor_h->cfg = motor_driver_cfg;
 	motor_h->state = MOTOR_6STEP_STATE_STOPPED;
 	motor_h->current_step = MOTOR_6STEP_STEP_OFF;
 	motor_h->last_step_time_ms = 0u;
