@@ -4,6 +4,7 @@
  */
 
 #include "config/project_config.h"
+#include <stddef.h>
 
 volatile bool user_button_on = false;  // Set by EXTI callback when the user button is pressed
 
@@ -164,3 +165,27 @@ const systick_cfg_t SYSTICK_CFG = {
 systick_handle_t SYSTICK_H = {
   .tick_count = 0,
 };
+
+/* 6-step motor configuration */
+const motor_6step_cfg_t MOTOR_6STEP_CFG = {
+		.step_period_ms = 500u,
+//		.dir = MOTOR_6STEP_DIR_CW,
+		.dir = MOTOR_6STEP_DIR_CCW,
+};
+
+/* 6-step motor runtime handle */
+motor_6step_handle_t MOTOR_6STEP_H = {
+		.cfg = NULL,
+		.state = MOTOR_6STEP_STATE_STOPPED,
+		.current_step = MOTOR_6STEP_STEP_OFF,
+		.last_step_time_ms = 0u,
+};
+
+/* Motor driver configuration */
+const motor_driver_cfg_t MOTOR_DRIVER_CFG = {
+		.pwm_h = &PWM_H,
+		.pwm_duty_permyriad = 1000u,
+};
+
+/* Motor driver runtime handle */
+motor_driver_handle_t MOTOR_DRIVER_H = {0};

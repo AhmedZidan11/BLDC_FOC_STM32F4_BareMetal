@@ -18,6 +18,8 @@
 #include "drivers/usart2.h"
 #include "drivers/pwm_tim1.h"
 #include "drivers/systick.h"
+#include "motor/motor_6step.h"
+#include "motor/motor_driver.h"
 
 #define SYSCLK_HZ				16000000u
 #define APB1_CLK_HZ				16000000U				// Adjust based on clock configuration
@@ -36,5 +38,9 @@ extern const pwm_tim1_cfg_t PWM_CFG;			// TIM1 3-channel PWM configuration
 extern pwm_tim1_handle_t PWM_H;
 extern const systick_cfg_t SYSTICK_CFG;
 extern systick_handle_t SYSTICK_H;
+extern const motor_6step_cfg_t MOTOR_6STEP_CFG;	// 6-step motor commutation configuration
+extern motor_6step_handle_t MOTOR_6STEP_H;
+extern const motor_driver_cfg_t MOTOR_DRIVER_CFG;	// Motor driver configuration
+extern motor_driver_handle_t MOTOR_DRIVER_H;
 
 #endif /* DRIVERS_PROJECT_CONFIG_H */

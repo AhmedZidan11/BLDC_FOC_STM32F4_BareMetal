@@ -3,22 +3,25 @@
 
 /**
  * @file motor_driver.h
- * @brief Bridge layer between motor commutation logic and hardware driver.
+ * @brief Bridge layer between motor commutation logic and PWM hardware driver.
  *
- * This module converts a logical 3-phase commutation map into abstract
- * per-phase drive commands.
+ * This module converts a logical 3-phase commutation map into per-phase
+ * commands and applies them to the TIM1 PWM driver.
  *
  * Responsibilities:
  * - accept phase commutation state from motor_6step
- * - convert phase states to drive commands
+ * - convert phase states to driver commands
+ * - apply per-phase PWM duty values
  * - store the last applied command set
  *
- * @note Hardware PWM output is not driven yet in this stage.
+ * @note In the current 3-PWM wiring, phase FLOAT is approximated with 0% duty.
+ *       True per-phase Hi-Z is not available through this interface.
  */
 
 #include <stdint.h>
 #include <stdbool.h>
 #include "motor/motor_6step.h"
+#include "drivers/pwm_tim1.h"
 
 typedef enum {
 	MOTOR_DRIVER_CMD_FLOAT = 0,
@@ -39,10 +42,10 @@ typedef struct {
 /**
  * @brief Motor driver configuration.
  *
- * @note Duty value is stored now for later PWM integration.
  */
 typedef struct {
-	uint16_t pwm_duty;
+	pwm_tim1_handle_t *pwm_h;
+	uint16_t pwm_duty_permyriad;
 } motor_driver_cfg_t;
 
 /**
@@ -53,6 +56,7 @@ typedef struct {
 	const motor_driver_cfg_t *cfg;
 	motor_driver_cmd_map_t last_cmd_map;
 	bool is_initialized;
+	bool is_started;
 } motor_driver_handle_t;
 
 /**
@@ -66,10 +70,27 @@ bool motor_driver_init(motor_driver_handle_t *motor_driver_h,
 					   const motor_driver_cfg_t *motor_driver_cfg);
 
 /**
+ * @brief Start PWM output stage.
+ *
+ * @param motor_driver_h Pointer to motor driver handle.
+ * @return true if start succeeded, false otherwise.
+ */
+bool motor_driver_start(motor_driver_handle_t *motor_driver_h);
+
+/**
+ * @brief Stop PWM output stage and clear phase duties.
+ *
+ * @param motor_driver_h Pointer to motor driver handle.
+ * @return true if stop succeeded, false otherwise.
+ */
+bool motor_driver_stop(motor_driver_handle_t *motor_driver_h);
+
+/**
  * @brief Apply a logical phase map to the motor driver layer.
  *
  * This function converts the given 6-step phase map into abstract drive
- * commands and stores the result in the runtime handle.
+ * commands, updates PWM compare values and stores the result in the runtime
+ * handle.
  *
  * @param motor_driver_h Pointer to motor driver handle.
  * @param phase_map Pointer to logical phase map.

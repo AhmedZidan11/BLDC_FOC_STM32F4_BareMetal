@@ -22,3 +22,6 @@ Release/
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Docs
+*/docs/
