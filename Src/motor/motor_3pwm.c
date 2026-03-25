@@ -43,6 +43,32 @@ bool motor_3pwm_init(motor_3pwm_handle_t *motor_3pwm_h,
 	return true;
 }
 
+bool motor_3pwm_start(motor_3pwm_handle_t *motor_3pwm_h)
+{
+	if (motor_3pwm_h == NULL) return false;
+	if ((motor_3pwm_h->cfg == NULL) || (motor_3pwm_h->cfg->pwm_h == NULL)) return false;
+	if (motor_3pwm_h->is_initialized == false) return false;
+	if (motor_3pwm_h->is_started == true) return true;
+
+	if (!pwm_tim1_start(motor_3pwm_h->cfg->pwm_h)) return false;
+
+	motor_3pwm_h->is_started = true;
+	return true;
+}
+
+bool motor_3pwm_stop(motor_3pwm_handle_t *motor_3pwm_h)
+{
+	if (motor_3pwm_h == NULL) return false;
+	if ((motor_3pwm_h->cfg == NULL) || (motor_3pwm_h->cfg->pwm_h == NULL)) return false;
+	if (motor_3pwm_h->is_initialized == false) return false;
+	if (motor_3pwm_h->is_started == false) return true;
+
+	if (!pwm_tim1_stop(motor_3pwm_h->cfg->pwm_h)) return false;
+
+	motor_3pwm_h->is_started = false;
+	return true;
+}
+
 bool motor_3pwm_set_duty_abc(motor_3pwm_handle_t *motor_3pwm_h,
 							 uint16_t phase_a_duty_permyriad,
 							 uint16_t phase_b_duty_permyriad,
@@ -63,4 +89,9 @@ bool motor_3pwm_set_duty_abc(motor_3pwm_handle_t *motor_3pwm_h,
 	motor_3pwm_h->phase_b_duty_permyriad = phase_b_duty_permyriad;
 	motor_3pwm_h->phase_c_duty_permyriad = phase_c_duty_permyriad;
 	return true;
+}
+
+bool motor_3pwm_set_neutral(motor_3pwm_handle_t *motor_3pwm_h)
+{
+	return motor_3pwm_set_duty_abc(motor_3pwm_h, 0u, 0u, 0u);
 }
