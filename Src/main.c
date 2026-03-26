@@ -24,8 +24,8 @@
 #include "board/board.h"
 #include "drivers/adc.h"
 #include "drivers/log.h"
-#include "motor/motor_6step.h"
-#include "motor/motor_driver.h"
+#include "motor/motor_3pwm.h"
+#include "motor/motor_openloop_sine.h"
 
 extern usart2_handle_t USART2_H;
 
@@ -39,74 +39,51 @@ int __io_putchar(int ch)
 
 int main(void)
 {
+	const motor_3pwm_cfg_t motor_3pwm_cfg = {
+			.pwm_h = &PWM_H,
+	};
+	motor_3pwm_handle_t motor_3pwm_h = {0};
+	const motor_openloop_sine_cfg_t motor_openloop_sine_cfg = {
+			.motor_3pwm_h = &motor_3pwm_h,
+	};
+	motor_openloop_sine_handle_t motor_openloop_sine_h = {0};
+
 	board_init(); // drivers initialization
 	log_init(&USART2_H);
 	LOGI("APP", "boot");
 
-	if (!motor_6step_init(&MOTOR_6STEP_H, &MOTOR_6STEP_CFG))
+	if (!motor_3pwm_init(&motor_3pwm_h, &motor_3pwm_cfg))
 	{
-		LOGE("M6", "init failed");
+		LOGE("M3PWM", "init failed");
 		while (1) {}
 	}
 
-	if (!motor_driver_init(&MOTOR_DRIVER_H, &MOTOR_DRIVER_CFG))
+	if (!motor_openloop_sine_init(&motor_openloop_sine_h, &motor_openloop_sine_cfg))
 	{
-		LOGE("MDRV", "init failed");
+		LOGE("MOLS", "init failed");
 		while (1) {}
 	}
 
-	motor_6step_start(&MOTOR_6STEP_H, SYSTICK_GetTimeMs());
-
-	motor_6step_phase_map_t phase_map = motor_6step_get_phase_map(&MOTOR_6STEP_H);
-	if (!motor_driver_apply_phase_map(&MOTOR_DRIVER_H, &phase_map))
+	if (!motor_openloop_sine_apply(&motor_openloop_sine_h, 16384u, 2000u))
 	{
-		LOGE("MDRV", "apply failed");
+		LOGE("MOLS", "apply failed");
 		while (1) {}
 	}
 
-	if (!motor_driver_start(&MOTOR_DRIVER_H))
+	if (!motor_3pwm_start(&motor_3pwm_h))
 	{
-		LOGE("MDRV", "start failed");
+		LOGE("M3PWM", "start failed");
 		while (1) {}
 	}
-	
-	LOGI("M6", "6-step state machine started");
-	LOGI("MDRV", "PWM output started");
+
+	LOGI("MOLS", "static vector applied angle=0 amp=2000");
+	LOGI("M3PWM", "PWM output started");
 
 	/* Loop forever */
 	while(1)
 	{
 		static uint32_t last_log_ms = 0u;
 		uint32_t now_ms = SYSTICK_GetTimeMs();
-
-		if (motor_6step_update(&MOTOR_6STEP_H, now_ms))
-		{
-			motor_6step_phase_map_t phase_map = motor_6step_get_phase_map(&MOTOR_6STEP_H);
-
-			if (!motor_driver_apply_phase_map(&MOTOR_DRIVER_H, &phase_map))
-			{
-				LOGE("MDRV", "apply failed");
-				while (1) {}
-			}
-
-			motor_driver_cmd_map_t cmd_map = motor_driver_get_cmd_map(&MOTOR_DRIVER_H);
-			
-			/* M6: 6-step commutation state machine */
-			LOGI_F("M6", "step=%u dir=%u state=%u A=%u B=%u C=%u",
-				   (unsigned)motor_6step_get_step(&MOTOR_6STEP_H),
-				   (unsigned)motor_6step_get_dir(&MOTOR_6STEP_H),
-				   (unsigned)motor_6step_get_state(&MOTOR_6STEP_H),
-				   (unsigned)cmd_map.phase_a,
-				   (unsigned)cmd_map.phase_b,
-				   (unsigned)cmd_map.phase_c);
-
-			/* sample_id = 1: 6-step driver command sample */
-			log_data_u32(1u,
-						 (uint32_t)motor_6step_get_step(&MOTOR_6STEP_H),
-						 (uint32_t)cmd_map.phase_a,
-						 (uint32_t)cmd_map.phase_b,
-						 (uint32_t)cmd_map.phase_c);
-		}
 
 		if ((now_ms - last_log_ms) >= 1000u)
 		{
