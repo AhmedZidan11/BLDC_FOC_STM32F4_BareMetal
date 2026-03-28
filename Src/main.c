@@ -26,6 +26,7 @@
 #include "drivers/log.h"
 #include "motor/motor_3pwm.h"
 #include "motor/motor_openloop_sine.h"
+#include "motor/motor_openloop_drive.h"
 
 extern usart2_handle_t USART2_H;
 
@@ -47,6 +48,12 @@ int main(void)
 			.motor_3pwm_h = &motor_3pwm_h,
 	};
 	motor_openloop_sine_handle_t motor_openloop_sine_h = {0};
+	const motor_openloop_drive_cfg_t motor_openloop_drive_cfg = {
+			.motor_openloop_sine_h = &motor_openloop_sine_h,
+			.amplitude_permyriad = 2000u,
+			.electrical_angle_step_u16 = 4096u,
+	};
+	motor_openloop_drive_handle_t motor_openloop_drive_h = {0};
 
 	board_init(); // drivers initialization
 	log_init(&USART2_H);
@@ -64,7 +71,13 @@ int main(void)
 		while (1) {}
 	}
 
-	if (!motor_openloop_sine_apply(&motor_openloop_sine_h, 16384u, 2000u))
+	if (!motor_openloop_drive_init(&motor_openloop_drive_h, &motor_openloop_drive_cfg))
+	{
+		LOGE("MOLD", "init failed");
+		while (1) {}
+	}
+
+	if (!motor_openloop_sine_apply(&motor_openloop_sine_h, 0u, 2000u))
 	{
 		LOGE("MOLS", "apply failed");
 		while (1) {}
@@ -77,13 +90,26 @@ int main(void)
 	}
 
 	LOGI("MOLS", "static vector applied angle=0 amp=2000");
+	LOGI("MOLD", "open-loop drive enabled step=4096 period=50ms");
 	LOGI("M3PWM", "PWM output started");
 
 	/* Loop forever */
 	while(1)
 	{
 		static uint32_t last_log_ms = 0u;
+		static uint32_t last_drive_update_ms = 0u;
 		uint32_t now_ms = SYSTICK_GetTimeMs();
+
+		if ((now_ms - last_drive_update_ms) >= 50u)
+		{
+			last_drive_update_ms = now_ms;
+
+			if (!motor_openloop_drive_update(&motor_openloop_drive_h))
+			{
+				LOGE("MOLD", "update failed");
+				while (1) {}
+			}
+		}
 
 		if ((now_ms - last_log_ms) >= 1000u)
 		{
