@@ -40,6 +40,7 @@ int __io_putchar(int ch)
 
 int main(void)
 {
+	const uint16_t startup_electrical_angle_u16 = 0u;
 	const motor_3pwm_cfg_t motor_3pwm_cfg = {
 			.pwm_h = &PWM_H,
 	};
@@ -51,7 +52,9 @@ int main(void)
 	const motor_openloop_drive_cfg_t motor_openloop_drive_cfg = {
 			.motor_openloop_sine_h = &motor_openloop_sine_h,
 			.amplitude_permyriad = 2000u,
-			.electrical_angle_step_u16 = 4096u,
+			.target_mechanical_speed_rpm = 75u,
+			.update_period_ms = 50u,
+			.phase_increment_ramp_step_u32 = 26843546u,
 	};
 	motor_openloop_drive_handle_t motor_openloop_drive_h = {0};
 
@@ -77,7 +80,9 @@ int main(void)
 		while (1) {}
 	}
 
-	if (!motor_openloop_sine_apply(&motor_openloop_sine_h, 0u, 2000u))
+	if (!motor_openloop_sine_apply(&motor_openloop_sine_h,
+								   startup_electrical_angle_u16,
+								   motor_openloop_drive_cfg.amplitude_permyriad))
 	{
 		LOGE("MOLS", "apply failed");
 		while (1) {}
@@ -89,8 +94,12 @@ int main(void)
 		while (1) {}
 	}
 
-	LOGI("MOLS", "static vector applied angle=0 amp=2000");
-	LOGI("MOLD", "open-loop drive enabled step=4096 period=50ms");
+	LOGI_F("MOLS", "static vector applied angle=%u amp=%u",
+		   (unsigned)startup_electrical_angle_u16,
+		   (unsigned)motor_openloop_drive_cfg.amplitude_permyriad);
+	LOGI_F("MOLD", "open-loop drive enabled speed=%u rpm period=%u ms",
+		   (unsigned)motor_openloop_drive_cfg.target_mechanical_speed_rpm,
+		   (unsigned)motor_openloop_drive_cfg.update_period_ms);
 	LOGI("M3PWM", "PWM output started");
 
 	/* Loop forever */
@@ -100,7 +109,7 @@ int main(void)
 		static uint32_t last_drive_update_ms = 0u;
 		uint32_t now_ms = SYSTICK_GetTimeMs();
 
-		if ((now_ms - last_drive_update_ms) >= 50u)
+		if ((now_ms - last_drive_update_ms) >= motor_openloop_drive_cfg.update_period_ms)
 		{
 			last_drive_update_ms = now_ms;
 

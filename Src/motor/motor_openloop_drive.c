@@ -39,12 +39,14 @@ bool motor_openloop_drive_init(motor_openloop_drive_handle_t *motor_openloop_dri
 								   (uint64_t)MOTOR_OPENLOOP_DRIVE_DEFAULT_TEST_POLE_PAIRS *
 								   (uint64_t)motor_openloop_drive_cfg->update_period_ms *
 								   MOTOR_OPENLOOP_DRIVE_PHASE_ACCUM_FULL_TURN_U32;
-	uint32_t phase_increment_u32 = (uint32_t)((phase_increment_num + (MOTOR_OPENLOOP_DRIVE_MS_PER_MINUTE / 2u)) /
-											  MOTOR_OPENLOOP_DRIVE_MS_PER_MINUTE);
+	uint32_t target_phase_increment_u32 = (uint32_t)((phase_increment_num + (MOTOR_OPENLOOP_DRIVE_MS_PER_MINUTE / 2u)) /
+													 MOTOR_OPENLOOP_DRIVE_MS_PER_MINUTE);
+	if (motor_openloop_drive_cfg->phase_increment_ramp_step_u32 == 0u) return false;
 
 	motor_openloop_drive_h->cfg = motor_openloop_drive_cfg;
 	motor_openloop_drive_h->phase_accumulator_u32 = 0u;
-	motor_openloop_drive_h->phase_increment_u32 = phase_increment_u32;
+	motor_openloop_drive_h->current_phase_increment_u32 = 0u;
+	motor_openloop_drive_h->target_phase_increment_u32 = target_phase_increment_u32;
 	motor_openloop_drive_h->last_electrical_angle_u16 = 0u;
 	motor_openloop_drive_h->is_initialized = true;
 
@@ -66,9 +68,33 @@ bool motor_openloop_drive_update(motor_openloop_drive_handle_t *motor_openloop_d
 	if ((motor_openloop_drive_h->cfg == NULL) || (motor_openloop_drive_h->cfg->motor_openloop_sine_h == NULL)) return false;
 	if (motor_openloop_drive_h->is_initialized == false) return false;
 
+	/* Simple speed-transition limiter, not a full motion-profile generator. */
+	if (motor_openloop_drive_h->current_phase_increment_u32 < motor_openloop_drive_h->target_phase_increment_u32)
+	{
+		uint32_t increment_delta = motor_openloop_drive_h->target_phase_increment_u32 -
+								   motor_openloop_drive_h->current_phase_increment_u32;
+		if (increment_delta > motor_openloop_drive_h->cfg->phase_increment_ramp_step_u32)
+		{
+			increment_delta = motor_openloop_drive_h->cfg->phase_increment_ramp_step_u32;
+		}
+
+		motor_openloop_drive_h->current_phase_increment_u32 += increment_delta;
+	}
+	else if (motor_openloop_drive_h->current_phase_increment_u32 > motor_openloop_drive_h->target_phase_increment_u32)
+	{
+		uint32_t increment_delta = motor_openloop_drive_h->current_phase_increment_u32 -
+								   motor_openloop_drive_h->target_phase_increment_u32;
+		if (increment_delta > motor_openloop_drive_h->cfg->phase_increment_ramp_step_u32)
+		{
+			increment_delta = motor_openloop_drive_h->cfg->phase_increment_ramp_step_u32;
+		}
+
+		motor_openloop_drive_h->current_phase_increment_u32 -= increment_delta;
+	}
+
 	/* The accumulator spans one full electrical turn over uint32_t. */
 	uint32_t next_phase_accumulator_u32 = motor_openloop_drive_h->phase_accumulator_u32 +
-										  motor_openloop_drive_h->phase_increment_u32;
+										  motor_openloop_drive_h->current_phase_increment_u32;
 	/* The upper 16 bits map directly to the uint16 electrical-angle interface. */
 	uint16_t next_electrical_angle_u16 = (uint16_t)(next_phase_accumulator_u32 >> MOTOR_OPENLOOP_DRIVE_PHASE_ACCUM_ANGLE_SHIFT);
 
