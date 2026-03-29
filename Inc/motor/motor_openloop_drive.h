@@ -37,7 +37,7 @@ typedef struct {
 	uint16_t amplitude_permyriad;
 	uint16_t target_mechanical_speed_rpm;
 	uint16_t update_period_ms;
-	uint32_t phase_increment_ramp_step_u32;
+	uint32_t phase_increment_ramp_step_u32; /* Max phase-increment change per update. */
 } motor_openloop_drive_cfg_t;
 
 /**
@@ -47,8 +47,8 @@ typedef struct {
 typedef struct {
 	const motor_openloop_drive_cfg_t *cfg;
 	uint32_t phase_accumulator_u32;   /* Electrical phase accumulator over one uint32_t turn. */
-	uint32_t current_phase_increment_u32; /* Limited increment applied on the current update. */
-	uint32_t target_phase_increment_u32;  /* Steady-state increment derived from target speed. */
+	uint32_t current_phase_increment_u32; /* Ramp-limited increment applied on the current update. */
+	uint32_t target_phase_increment_u32;  /* Final steady-state increment derived from target speed. */
 	uint16_t last_electrical_angle_u16; /* Last exported electrical angle for motor_openloop_sine. */
 	bool is_initialized;
 } motor_openloop_drive_handle_t;

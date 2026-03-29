@@ -41,6 +41,10 @@ int __io_putchar(int ch)
 int main(void)
 {
 	const uint16_t startup_electrical_angle_u16 = 0u;
+	const uint16_t openloop_drive_test_amplitude_permyriad = 2000u;
+	const uint16_t openloop_drive_test_target_speed_rpm = 75u;
+	const uint16_t openloop_drive_test_update_period_ms = 50u;
+	const uint32_t openloop_drive_test_phase_increment_ramp_step_u32 = 26843546u;
 	const motor_3pwm_cfg_t motor_3pwm_cfg = {
 			.pwm_h = &PWM_H,
 	};
@@ -51,10 +55,10 @@ int main(void)
 	motor_openloop_sine_handle_t motor_openloop_sine_h = {0};
 	const motor_openloop_drive_cfg_t motor_openloop_drive_cfg = {
 			.motor_openloop_sine_h = &motor_openloop_sine_h,
-			.amplitude_permyriad = 2000u,
-			.target_mechanical_speed_rpm = 75u,
-			.update_period_ms = 50u,
-			.phase_increment_ramp_step_u32 = 26843546u,
+			.amplitude_permyriad = openloop_drive_test_amplitude_permyriad,
+			.target_mechanical_speed_rpm = openloop_drive_test_target_speed_rpm,
+			.update_period_ms = openloop_drive_test_update_period_ms,
+			.phase_increment_ramp_step_u32 = openloop_drive_test_phase_increment_ramp_step_u32,
 	};
 	motor_openloop_drive_handle_t motor_openloop_drive_h = {0};
 
@@ -100,6 +104,7 @@ int main(void)
 	LOGI_F("MOLD", "open-loop drive enabled speed=%u rpm period=%u ms",
 		   (unsigned)motor_openloop_drive_cfg.target_mechanical_speed_rpm,
 		   (unsigned)motor_openloop_drive_cfg.update_period_ms);
+	LOGI("MOLD", "slow no-motor ramp test active");
 	LOGI("M3PWM", "PWM output started");
 
 	/* Loop forever */
@@ -111,13 +116,13 @@ int main(void)
 
 		if ((now_ms - last_drive_update_ms) >= motor_openloop_drive_cfg.update_period_ms)
 		{
-			last_drive_update_ms = now_ms;
-
 			if (!motor_openloop_drive_update(&motor_openloop_drive_h))
 			{
 				LOGE("MOLD", "update failed");
 				while (1) {}
 			}
+
+			last_drive_update_ms += motor_openloop_drive_cfg.update_period_ms;
 		}
 
 		if ((now_ms - last_log_ms) >= 1000u)

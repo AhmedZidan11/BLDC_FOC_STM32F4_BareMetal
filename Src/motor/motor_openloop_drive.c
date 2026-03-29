@@ -68,7 +68,7 @@ bool motor_openloop_drive_update(motor_openloop_drive_handle_t *motor_openloop_d
 	if ((motor_openloop_drive_h->cfg == NULL) || (motor_openloop_drive_h->cfg->motor_openloop_sine_h == NULL)) return false;
 	if (motor_openloop_drive_h->is_initialized == false) return false;
 
-	/* Simple speed-transition limiter, not a full motion-profile generator. */
+	/* Simple per-update speed-transition limiter, not a full motion-profile generator. */
 	if (motor_openloop_drive_h->current_phase_increment_u32 < motor_openloop_drive_h->target_phase_increment_u32)
 	{
 		uint32_t increment_delta = motor_openloop_drive_h->target_phase_increment_u32 -
