@@ -22,8 +22,11 @@
 #include <stdbool.h>
 #include "motor/motor_openloop_sine.h"
 
-#define MOTOR_OPENLOOP_DRIVE_PHASE_ACCUM_ANGLE_SHIFT  16u
-#define MOTOR_OPENLOOP_DRIVE_DEFAULT_TEST_POLE_PAIRS  1u
+#define MOTOR_OPENLOOP_DRIVE_PHASE_ACCUM_ANGLE_SHIFT            16u
+#define MOTOR_OPENLOOP_DRIVE_PHASE_ACCUM_FULL_TURN_U32          (1ULL << 32)
+#define MOTOR_OPENLOOP_DRIVE_MS_PER_MINUTE                      60000ULL
+#define MOTOR_OPENLOOP_DRIVE_MIN_UPDATES_PER_ELECTRICAL_TURN    16u
+#define MOTOR_OPENLOOP_DRIVE_DEFAULT_TEST_POLE_PAIRS            1u
 
 /**
  * @brief Open-loop drive configuration.
@@ -42,9 +45,9 @@ typedef struct {
  */
 typedef struct {
 	const motor_openloop_drive_cfg_t *cfg;
-	uint32_t phase_accumulator_u32;
-	uint32_t phase_increment_u32;
-	uint16_t last_electrical_angle_u16;
+	uint32_t phase_accumulator_u32;   /* Electrical phase accumulator over one uint32_t turn. */
+	uint32_t phase_increment_u32;     /* Fixed accumulator increment applied on each update. */
+	uint16_t last_electrical_angle_u16; /* Last exported electrical angle for motor_openloop_sine. */
 	bool is_initialized;
 } motor_openloop_drive_handle_t;
 
