@@ -32,7 +32,7 @@
 typedef struct {
 	motor_openloop_sine_handle_t *motor_openloop_sine_h;
 	uint16_t amplitude_permyriad;
-	uint16_t requested_mechanical_speed_rpm;
+	uint16_t target_mechanical_speed_rpm;
 	uint16_t update_period_ms;
 } motor_openloop_drive_cfg_t;
 
@@ -65,8 +65,5 @@ bool motor_openloop_drive_init(motor_openloop_drive_handle_t *motor_openloop_dri
  * @return true if update succeeded, false otherwise.
  */
 bool motor_openloop_drive_update(motor_openloop_drive_handle_t *motor_openloop_drive_h);
-
-/* Temporary compatibility alias for existing designated initializers in main.c. */
-#define electrical_angle_step_u16 requested_mechanical_speed_rpm
 
 #endif /* MOTOR_MOTOR_OPENLOOP_DRIVE_H */
