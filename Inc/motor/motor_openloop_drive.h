@@ -6,20 +6,23 @@
  * @brief Small stateful open-loop drive layer above motor_openloop_sine.
  *
  * This module tracks open-loop electrical phase progression and applies the
- * updated sine vector through the open-loop sine layer.
+ * updated sine vector through the open-loop sine layer using the shared motor
+ * data model.
  *
  * Responsibilities:
  * - store open-loop drive configuration
- * - store phase accumulator state
- * - store phase increment state
+ * - bind shared motor-domain state
  * - apply the updated electrical angle through motor_openloop_sine
  *
+ * @note motor_openloop.h is the preferred merged public open-loop interface.
+ *       This split helper remains temporarily for migration clarity.
  * @note Electrical angle uses full-turn uint16 units.
  * @note Amplitude inputs use permyriad units (0..10000).
  */
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "motor/motor.h"
 #include "motor/motor_openloop_sine.h"
 
 #define MOTOR_OPENLOOP_DRIVE_PHASE_ACCUM_ANGLE_SHIFT            16u
@@ -33,9 +36,8 @@
  *
  */
 typedef struct {
+	motor_handle_t *motor_h;
 	motor_openloop_sine_handle_t *motor_openloop_sine_h;
-	uint16_t amplitude_permyriad;
-	uint16_t target_mechanical_speed_rpm;
 	uint16_t update_period_ms;
 	uint32_t phase_increment_ramp_step_u32; /* Max phase-increment change per update. */
 } motor_openloop_drive_cfg_t;
@@ -46,10 +48,7 @@ typedef struct {
  */
 typedef struct {
 	const motor_openloop_drive_cfg_t *cfg;
-	uint32_t phase_accumulator_u32;   /* Electrical phase accumulator over one uint32_t turn. */
-	uint32_t current_phase_increment_u32; /* Ramp-limited increment applied on the current update. */
-	uint32_t target_phase_increment_u32;  /* Final steady-state increment derived from target speed. */
-	uint16_t last_electrical_angle_u16; /* Last exported electrical angle for motor_openloop_sine. */
+	motor_handle_t *motor_h;
 	bool is_initialized;
 } motor_openloop_drive_handle_t;
 

@@ -13,6 +13,8 @@
  * - accept electrical angle and amplitude commands
  * - store the last applied static vector command
  *
+ * @note motor_openloop.h is the preferred merged public open-loop interface.
+ *       This split helper remains temporarily for migration clarity.
  * @note Electrical angle uses full-turn uint16 units
  *       (0..65535 <=> 0..1 electrical revolution).
  * @note Amplitude inputs use permyriad units (0..10000).
