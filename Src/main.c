@@ -24,9 +24,6 @@
 #include "board/board.h"
 #include "drivers/adc.h"
 #include "drivers/log.h"
-#include "motor/motor_3pwm.h"
-#include "motor/motor_openloop_sine.h"
-#include "motor/motor_openloop_drive.h"
 
 extern usart2_handle_t USART2_H;
 
@@ -40,89 +37,40 @@ int __io_putchar(int ch)
 
 int main(void)
 {
-	const uint16_t startup_electrical_angle_u16 = 0u;
-	const uint16_t openloop_drive_test_amplitude_permyriad = 2000u;
-	const uint16_t openloop_drive_test_target_speed_rpm = 75u;
-	const uint16_t openloop_drive_test_update_period_ms = 50u;
-	const uint32_t openloop_drive_test_phase_increment_ramp_step_u32 = 26843546u;
-	const motor_3pwm_cfg_t motor_3pwm_cfg = {
-			.pwm_h = &PWM_H,
-	};
-	motor_3pwm_handle_t motor_3pwm_h = {0};
-	const motor_openloop_sine_cfg_t motor_openloop_sine_cfg = {
-			.motor_3pwm_h = &motor_3pwm_h,
-	};
-	motor_openloop_sine_handle_t motor_openloop_sine_h = {0};
-	const motor_openloop_drive_cfg_t motor_openloop_drive_cfg = {
-			.motor_openloop_sine_h = &motor_openloop_sine_h,
-			.amplitude_permyriad = openloop_drive_test_amplitude_permyriad,
-			.target_mechanical_speed_rpm = openloop_drive_test_target_speed_rpm,
-			.update_period_ms = openloop_drive_test_update_period_ms,
-			.phase_increment_ramp_step_u32 = openloop_drive_test_phase_increment_ramp_step_u32,
-	};
-	motor_openloop_drive_handle_t motor_openloop_drive_h = {0};
+	const uint32_t as5600_read_period_ms = 1000u;
+	const uint32_t as5600_adc_full_scale = 4095u;
+	const uint32_t as5600_angle_full_scale_deg_x10 = 3600u;
 
 	board_init(); // drivers initialization
 	log_init(&USART2_H);
 	LOGI("APP", "boot");
+	LOGI("AS5600", "analog hand-rotation test active");
 
-	if (!motor_3pwm_init(&motor_3pwm_h, &motor_3pwm_cfg))
-	{
-		LOGE("M3PWM", "init failed");
-		while (1) {}
-	}
-
-	if (!motor_openloop_sine_init(&motor_openloop_sine_h, &motor_openloop_sine_cfg))
-	{
-		LOGE("MOLS", "init failed");
-		while (1) {}
-	}
-
-	if (!motor_openloop_drive_init(&motor_openloop_drive_h, &motor_openloop_drive_cfg))
-	{
-		LOGE("MOLD", "init failed");
-		while (1) {}
-	}
-
-	if (!motor_openloop_sine_apply(&motor_openloop_sine_h,
-								   startup_electrical_angle_u16,
-								   motor_openloop_drive_cfg.amplitude_permyriad))
-	{
-		LOGE("MOLS", "apply failed");
-		while (1) {}
-	}
-
-	if (!motor_3pwm_start(&motor_3pwm_h))
-	{
-		LOGE("M3PWM", "start failed");
-		while (1) {}
-	}
-
-	LOGI_F("MOLS", "static vector applied angle=%u amp=%u",
-		   (unsigned)startup_electrical_angle_u16,
-		   (unsigned)motor_openloop_drive_cfg.amplitude_permyriad);
-	LOGI_F("MOLD", "open-loop drive enabled speed=%u rpm period=%u ms",
-		   (unsigned)motor_openloop_drive_cfg.target_mechanical_speed_rpm,
-		   (unsigned)motor_openloop_drive_cfg.update_period_ms);
-	LOGI("MOLD", "slow no-motor ramp test active");
-	LOGI("M3PWM", "PWM output started");
+	adc_start(&ADC1_IN0_H);
 
 	/* Loop forever */
 	while(1)
 	{
 		static uint32_t last_log_ms = 0u;
-		static uint32_t last_drive_update_ms = 0u;
+		static uint32_t last_as5600_read_ms = 0u;
 		uint32_t now_ms = SYSTICK_GetTimeMs();
 
-		if ((now_ms - last_drive_update_ms) >= motor_openloop_drive_cfg.update_period_ms)
+		if ((now_ms - last_as5600_read_ms) >= as5600_read_period_ms)
 		{
-			if (!motor_openloop_drive_update(&motor_openloop_drive_h))
+			uint16_t as5600_raw = 0u;
+			if (!adc_read(&ADC1_IN0_H, &as5600_raw))
 			{
-				LOGE("MOLD", "update failed");
-				while (1) {}
+				as5600_raw = ADC1_IN0_H.last_reading;
 			}
 
-			last_drive_update_ms += motor_openloop_drive_cfg.update_period_ms;
+			uint32_t angle_deg_x10 = ((uint32_t)as5600_raw * as5600_angle_full_scale_deg_x10) / as5600_adc_full_scale;
+			printf("AS5600 raw=%u angle_deg=%lu.%01lu\r\n",
+				   (unsigned)as5600_raw,
+				   (unsigned long)(angle_deg_x10 / 10u),
+				   (unsigned long)(angle_deg_x10 % 10u));
+
+			adc_start(&ADC1_IN0_H);
+			last_as5600_read_ms += as5600_read_period_ms;
 		}
 
 		if ((now_ms - last_log_ms) >= 1000u)
