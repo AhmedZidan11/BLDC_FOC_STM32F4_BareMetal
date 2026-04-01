@@ -24,7 +24,7 @@
 #include <stdbool.h>
 #include "drivers/adc.h"
 
-#define AS5600_ANALOG_MECHANICAL_ANGLE_FULL_TURN_U16  65535u
+#define AS5600_ANALOG_MECHANICAL_ANGLE_MAX_U16  65535u
 
 /**
  * @brief AS5600 analog mechanical-angle direction.
