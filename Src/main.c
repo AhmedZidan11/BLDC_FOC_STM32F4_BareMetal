@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include "config/project_config.h"
+#include "drivers/as5600_analog.h"
 #include "board/board.h"
 #include "drivers/adc.h"
 #include "drivers/log.h"
@@ -57,7 +58,6 @@ int main(void)
 	const uint16_t motor_test_status_print_period_ms = 1000u;
 	const uint64_t motor_test_mrpm_per_rpm = 1000ULL;
 	const uint32_t as5600_adc_full_scale = 4095u;
-	const uint32_t as5600_angle_u16_full_scale = 65535u;
 	const uint32_t as5600_angle_deg_x10_full_scale = 3600u;
 	const uint32_t motor_test_ramp_update_count =
 			(uint32_t)((motor_test_ramp_duration_ms + motor_test_update_period_ms - 1u) /
@@ -115,17 +115,21 @@ int main(void)
 			.window_sample_count = motor_test_speed_estimator_window_sample_count,
 	};
 	motor_speed_estimator_handle_t motor_speed_estimator_h = {0};
+	const as5600_analog_cfg_t as5600_analog_cfg = {
+			.adc_h = &ADC1_IN0_H,
+			.adc_full_scale = (uint16_t)as5600_adc_full_scale,
+			.raw_sample_period_us = motor_test_angle_adc_sample_period_us,
+			.angle_publish_period_us = motor_test_angle_average_period_us,
+			.mechanical_angle_direction = (motor_test_sensor_direction < 0) ?
+					AS5600_ANALOG_DIRECTION_REVERSE :
+					AS5600_ANALOG_DIRECTION_FORWARD,
+	};
+	as5600_analog_handle_t as5600_analog_h = {0};
 	uint32_t last_log_ms = 0u;
 	uint32_t last_openloop_update_ms = 0u;
 	uint32_t last_speed_estimator_update_ms = 0u;
 	uint32_t last_status_print_ms = 0u;
 	uint32_t alignment_start_ms = 0u;
-	uint64_t last_angle_adc_sample_us = 0u;
-	uint64_t last_angle_average_update_us = 0u;
-	uint32_t as5600_raw_accumulator = 0u;
-	uint16_t as5600_raw_sample_count = 0u;
-	uint16_t as5600_raw_averaged = 0u;
-	uint16_t as5600_raw_sample = 0u;
 	uint16_t mechanical_angle_u16 = 0u;
 	bool alignment_done = false;
 
@@ -152,6 +156,13 @@ int main(void)
 		while(1) {}
 	}
 
+	/* Initialize AS5600 analog acquisition for the powered test. */
+	if (!as5600_analog_init(&as5600_analog_h, &as5600_analog_cfg))
+	{
+		LOGE("AS5600", "init failed");
+		while(1) {}
+	}
+
 	if (!motor_openloop_apply(&motor_openloop_h, motor_test_alignment_electrical_angle_u16))
 	{
 		LOGE("MOPEN", "alignment apply failed");
@@ -170,8 +181,9 @@ int main(void)
 	last_openloop_update_ms = alignment_start_ms;
 	last_speed_estimator_update_ms = alignment_start_ms;
 	last_status_print_ms = alignment_start_ms;
-	last_angle_adc_sample_us = SYSTICK_GetTimeUs();
-	last_angle_average_update_us = last_angle_adc_sample_us;
+	/* Seed AS5600 acquisition timing from the current microsecond timebase. */
+	as5600_analog_h.last_raw_sample_time_us = SYSTICK_GetTimeUs();
+	as5600_analog_h.last_angle_publish_time_us = as5600_analog_h.last_raw_sample_time_us;
 	adc_start(&ADC1_IN0_H);
 
 	/* Loop forever */
@@ -180,39 +192,26 @@ int main(void)
 		uint32_t now_ms = SYSTICK_GetTimeMs();
 		uint64_t now_us = SYSTICK_GetTimeUs();
 
-		if ((now_us - last_angle_adc_sample_us) >= motor_test_angle_adc_sample_period_us)
+		/* Update AS5600 raw acquisition and averaged angle publication. */
+		if (!as5600_analog_update(&as5600_analog_h, now_us))
 		{
-			if (adc_read(&ADC1_IN0_H, &as5600_raw_sample))
-			{
-				as5600_raw_accumulator += as5600_raw_sample;
-				as5600_raw_sample_count++;
-			}
-
-			adc_start(&ADC1_IN0_H);
-			last_angle_adc_sample_us += motor_test_angle_adc_sample_period_us;
+			gpio_write(MOTOR_EN.pin, false);
+			motor_h.status.is_enabled = false;
+			(void)motor_3pwm_stop(&motor_3pwm_h);
+			LOGE("AS5600", "update failed");
+			while(1) {}
 		}
 
-		if ((now_us - last_angle_average_update_us) >= motor_test_angle_average_period_us)
+		/* Consume one new published AS5600 mechanical-angle sample. */
+		if (as5600_analog_h.has_new_angle_sample == true)
 		{
-			if (as5600_raw_sample_count > 0u)
-			{
-				as5600_raw_averaged = (uint16_t)(as5600_raw_accumulator / as5600_raw_sample_count);
-				as5600_raw_accumulator = 0u;
-				as5600_raw_sample_count = 0u;
-			}
-
-			mechanical_angle_u16 =
-					(uint16_t)(((uint32_t)as5600_raw_averaged * as5600_angle_u16_full_scale) / as5600_adc_full_scale);
-			if (motor_test_sensor_direction < 0)
-			{
-				mechanical_angle_u16 = (uint16_t)(0u - mechanical_angle_u16);
-			}
-
-			motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
+			mechanical_angle_u16 = as5600_analog_h.mechanical_angle_u16;
+			/* Publish the latest averaged sensor angle into the shared motor state. */
+			motor_h.measurements.mechanical_angle_u16 = as5600_analog_h.mechanical_angle_u16;
 			motor_h.status.has_valid_mechanical_angle = true;
-			last_angle_average_update_us += motor_test_angle_average_period_us;
 		}
 
+		/* Hold the initial alignment vector before enabling phase progression. */
 		if (alignment_done == false)
 		{
 			if ((now_ms - alignment_start_ms) >= motor_test_alignment_duration_ms)
@@ -222,6 +221,7 @@ int main(void)
 				last_openloop_update_ms = now_ms;
 			}
 		}
+		/* Advance the active powered open-loop command path. */
 		else if ((now_ms - last_openloop_update_ms) >= motor_openloop_cfg.update_period_ms)
 		{
 			if (!motor_openloop_update(&motor_openloop_h))
@@ -236,6 +236,7 @@ int main(void)
 			last_openloop_update_ms += motor_openloop_cfg.update_period_ms;
 		}
 
+		/* Feed the latest published mechanical angle into the speed estimator. */
 		if ((now_ms - last_speed_estimator_update_ms) >= motor_speed_estimator_cfg.sample_period_ms)
 		{
 			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
@@ -250,12 +251,14 @@ int main(void)
 			last_speed_estimator_update_ms += motor_speed_estimator_cfg.sample_period_ms;
 		}
 
+		/* Convert the averaged raw ADC code into display angle in 0.1 degree units. */
 		if ((now_ms - last_status_print_ms) >= motor_test_status_print_period_ms)
 		{
 			int32_t target_mrpm = motor_h.targets.target_mechanical_speed_mrpm;
 			int32_t est_mrpm = motor_h.measurements.measured_mechanical_speed_mrpm;
 			int32_t err_mrpm = target_mrpm - est_mrpm;
-			uint32_t angle_deg_x10 = ((uint32_t)as5600_raw_averaged * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
+			uint32_t angle_deg_x10 =
+					((uint32_t)as5600_analog_h.last_raw_averaged * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
 			const char *est_sign = (est_mrpm < 0) ? "-" : "";
 			const char *err_sign = (err_mrpm < 0) ? "-" : "";
 			int32_t est_mrpm_abs = (est_mrpm < 0) ? -est_mrpm : est_mrpm;
@@ -266,7 +269,7 @@ int main(void)
 					? "yes" : "no";
 
 			printf("OL raw_avg=%u angle_deg=%lu.%01lu target_mrpm=%ld est_mrpm=%ld err_mrpm=%ld target_rpm=%ld.%03ld est_rpm=%s%ld.%03ld err_rpm=%s%ld.%03ld steady=%s\r\n",
-				   (unsigned)as5600_raw_averaged,
+				   (unsigned)as5600_analog_h.last_raw_averaged,
 				   (unsigned long)(angle_deg_x10 / 10u),
 				   (unsigned long)(angle_deg_x10 % 10u),
 				   (long)target_mrpm,
