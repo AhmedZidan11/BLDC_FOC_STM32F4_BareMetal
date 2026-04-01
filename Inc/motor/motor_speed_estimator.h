@@ -31,6 +31,7 @@
 typedef struct {
 	motor_handle_t *motor_h;
 	uint16_t sample_period_ms;
+	uint16_t window_sample_count;
 } motor_speed_estimator_cfg_t;
 
 /**
