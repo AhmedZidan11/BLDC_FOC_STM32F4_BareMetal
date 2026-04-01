@@ -21,10 +21,12 @@
 #include <stdbool.h>
 #include "config/project_config.h"
 #include "board/board.h"
+#include "drivers/adc.h"
 #include "drivers/log.h"
 #include "motor/motor.h"
 #include "motor/motor_3pwm.h"
 #include "motor/motor_openloop.h"
+#include "motor/motor_speed_estimator.h"
 
 extern usart2_handle_t USART2_H;
 
@@ -40,13 +42,37 @@ int main(void)
 {
 	const uint16_t motor_test_pole_pairs = 7u;
 	const int32_t motor_test_target_mechanical_speed_mrpm = 60000;
+	const int8_t motor_test_sensor_direction = -1;
 	const uint16_t motor_test_alignment_amplitude_permyriad = 1500u;
 	const uint16_t motor_test_run_amplitude_permyriad = 2000u;
 	const uint16_t motor_test_max_amplitude_permyriad = 10000u;
 	const uint16_t motor_test_update_period_ms = 1u;
+	const uint16_t motor_test_ramp_duration_ms = 300u;
 	const uint16_t motor_test_alignment_duration_ms = 400u;
 	const uint16_t motor_test_alignment_electrical_angle_u16 = 0u;
-	const uint32_t motor_test_phase_increment_ramp_step_u32 = 128u;
+	const uint16_t motor_test_speed_estimator_period_ms = 50u;
+	const uint16_t motor_test_speed_estimator_window_sample_count = 4u;
+	const uint16_t motor_test_status_print_period_ms = 1000u;
+	const uint64_t motor_test_mrpm_per_rpm = 1000ULL;
+	const uint32_t as5600_adc_full_scale = 4095u;
+	const uint32_t as5600_angle_u16_full_scale = 65535u;
+	const uint32_t as5600_angle_deg_x10_full_scale = 3600u;
+	const uint32_t motor_test_ramp_update_count =
+			(uint32_t)((motor_test_ramp_duration_ms + motor_test_update_period_ms - 1u) /
+					  motor_test_update_period_ms);
+	const uint64_t motor_test_target_phase_increment_num =
+			(uint64_t)motor_test_target_mechanical_speed_mrpm *
+			(uint64_t)motor_test_pole_pairs *
+			(uint64_t)motor_test_update_period_ms *
+			MOTOR_OPENLOOP_PHASE_ACCUM_FULL_TURN_U32;
+	const uint32_t motor_test_target_phase_increment_u32 =
+			(uint32_t)((motor_test_target_phase_increment_num +
+					   ((MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm) / 2u)) /
+					  (MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm));
+	/* Reach the target phase increment in roughly motor_test_ramp_duration_ms. */
+	const uint32_t motor_test_phase_increment_ramp_step_u32 =
+			(uint32_t)((motor_test_target_phase_increment_u32 + motor_test_ramp_update_count - 1u) /
+					  motor_test_ramp_update_count);
 
 	motor_handle_t motor_h = {
 			.measurements = {0},
@@ -81,9 +107,19 @@ int main(void)
 			.phase_increment_ramp_step_u32 = motor_test_phase_increment_ramp_step_u32,
 	};
 	motor_openloop_handle_t motor_openloop_h = {0};
+	const motor_speed_estimator_cfg_t motor_speed_estimator_cfg = {
+			.motor_h = &motor_h,
+			.sample_period_ms = motor_test_speed_estimator_period_ms,
+			.window_sample_count = motor_test_speed_estimator_window_sample_count,
+	};
+	motor_speed_estimator_handle_t motor_speed_estimator_h = {0};
 	uint32_t last_log_ms = 0u;
 	uint32_t last_openloop_update_ms = 0u;
+	uint32_t last_speed_estimator_update_ms = 0u;
+	uint32_t last_status_print_ms = 0u;
 	uint32_t alignment_start_ms = 0u;
+	uint16_t as5600_raw = 0u;
+	uint16_t mechanical_angle_u16 = 0u;
 	bool alignment_done = false;
 
 	board_init(); // drivers initialization
@@ -103,6 +139,12 @@ int main(void)
 		while(1) {}
 	}
 
+	if (!motor_speed_estimator_init(&motor_speed_estimator_h, &motor_speed_estimator_cfg))
+	{
+		LOGE("MEST", "init failed");
+		while(1) {}
+	}
+
 	if (!motor_openloop_apply(&motor_openloop_h, motor_test_alignment_electrical_angle_u16))
 	{
 		LOGE("MOPEN", "alignment apply failed");
@@ -119,6 +161,9 @@ int main(void)
 	motor_h.status.is_enabled = true;
 	alignment_start_ms = SYSTICK_GetTimeMs();
 	last_openloop_update_ms = alignment_start_ms;
+	last_speed_estimator_update_ms = alignment_start_ms;
+	last_status_print_ms = alignment_start_ms;
+	adc_start(&ADC1_IN0_H);
 
 	/* Loop forever */
 	while(1)
@@ -146,6 +191,67 @@ int main(void)
 			}
 
 			last_openloop_update_ms += motor_openloop_cfg.update_period_ms;
+		}
+
+		if ((now_ms - last_speed_estimator_update_ms) >= motor_speed_estimator_cfg.sample_period_ms)
+		{
+			if (!adc_read(&ADC1_IN0_H, &as5600_raw))
+			{
+				as5600_raw = ADC1_IN0_H.last_reading;
+			}
+
+			mechanical_angle_u16 = (uint16_t)(((uint32_t)as5600_raw * as5600_angle_u16_full_scale) / as5600_adc_full_scale);
+			if (motor_test_sensor_direction < 0)
+			{
+				mechanical_angle_u16 = (uint16_t)(0u - mechanical_angle_u16);
+			}
+
+			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
+			{
+				gpio_write(MOTOR_EN.pin, false);
+				motor_h.status.is_enabled = false;
+				(void)motor_3pwm_stop(&motor_3pwm_h);
+				LOGE("MEST", "update failed");
+				while(1) {}
+			}
+
+			adc_start(&ADC1_IN0_H);
+			last_speed_estimator_update_ms += motor_speed_estimator_cfg.sample_period_ms;
+		}
+
+		if ((now_ms - last_status_print_ms) >= motor_test_status_print_period_ms)
+		{
+			int32_t target_mrpm = motor_h.targets.target_mechanical_speed_mrpm;
+			int32_t est_mrpm = motor_h.measurements.measured_mechanical_speed_mrpm;
+			int32_t err_mrpm = target_mrpm - est_mrpm;
+			uint32_t angle_deg_x10 = ((uint32_t)as5600_raw * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
+			const char *est_sign = (est_mrpm < 0) ? "-" : "";
+			const char *err_sign = (err_mrpm < 0) ? "-" : "";
+			int32_t est_mrpm_abs = (est_mrpm < 0) ? -est_mrpm : est_mrpm;
+			int32_t err_mrpm_abs = (err_mrpm < 0) ? -err_mrpm : err_mrpm;
+			const char *steady_str =
+					((alignment_done == true) &&
+					 (motor_h.openloop.current_phase_increment_u32 == motor_h.openloop.target_phase_increment_u32))
+					? "yes" : "no";
+
+			printf("OL raw=%u angle_deg=%lu.%01lu target_mrpm=%ld est_mrpm=%ld err_mrpm=%ld target_rpm=%ld.%03ld est_rpm=%s%ld.%03ld err_rpm=%s%ld.%03ld steady=%s\r\n",
+				   (unsigned)as5600_raw,
+				   (unsigned long)(angle_deg_x10 / 10u),
+				   (unsigned long)(angle_deg_x10 % 10u),
+				   (long)target_mrpm,
+				   (long)est_mrpm,
+				   (long)err_mrpm,
+				   (long)(target_mrpm / 1000),
+				   (long)(target_mrpm % 1000),
+				   est_sign,
+				   (long)(est_mrpm_abs / 1000),
+				   (long)(est_mrpm_abs % 1000),
+				   err_sign,
+				   (long)(err_mrpm_abs / 1000),
+				   (long)(err_mrpm_abs % 1000),
+				   steady_str);
+
+			last_status_print_ms += motor_test_status_print_period_ms;
 		}
 
 		if ((now_ms - last_log_ms) >= 1000u)
