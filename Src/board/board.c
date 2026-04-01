@@ -28,6 +28,8 @@ void board_init()
 	/* Configure GPIO pins */
 	gpio_init_pin(&LED_OUTPUT);
 	gpio_init_pin(&PUSH_BUTTON);
+	gpio_init_pin(&MOTOR_EN);
+	gpio_write(MOTOR_EN.pin, false);
 	/* Configure EXTI lines */
 	exti_register(13, user_button_callback, NULL);
 	exti_init(&USER_BUTTON_EXTI);

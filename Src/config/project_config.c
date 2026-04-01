@@ -28,6 +28,16 @@ const gpio_pin_cfg_t PUSH_BUTTON = {
 		.af = 0
 };
 
+/* GPIO configuration for motor driver enable (PB0) */
+const gpio_pin_cfg_t MOTOR_EN = {
+		.pin = {GPIOB, 0, GPIO_PORTB},
+		.mode = GPIO_MODE_OUTPUT,
+		.otype = GPIO_OTYPE_PUSHPULL,
+		.pull = GPIO_PULL_NONE,
+		.speed = GPIO_SPEED_LOW,
+		.af = 0
+};
+
 /* GPIO configuration for ADC input (PA0 / ADC1_IN0) */
 const gpio_pin_cfg_t ADC_IN0 = {
 		.pin = {GPIOA, 0, GPIO_PORTA},
@@ -142,7 +152,7 @@ const gpio_pin_cfg_t PWM_CH3 = {
 /* TIM1 PWM configuration (frequency in Hz) */
 const pwm_tim1_cfg_t PWM_CFG = {
   .tim_clk_hz = SYSCLK_HZ,
-  .pwm_hz     = 1000,
+  .pwm_hz     = 20000,
   .align      = PWM_ALIGN_CENTER_1,
   .pin_ch1    = &PWM_CH1,
   .pin_ch2    = &PWM_CH2,

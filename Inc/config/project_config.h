@@ -28,6 +28,7 @@
 
 extern const gpio_pin_cfg_t LED_OUTPUT;			// User LED (PA5)
 extern const gpio_pin_cfg_t PUSH_BUTTON;		// User Push-button (PC13)
+extern const gpio_pin_cfg_t MOTOR_EN;			// SimpleFOC Mini enable output
 extern const exti_cfg_t USER_BUTTON_EXTI;
 extern const adc_cfg_t ADC1_IN0_CFG;			// Analog input (PA0)
 extern adc_handle_t ADC1_IN0_H;

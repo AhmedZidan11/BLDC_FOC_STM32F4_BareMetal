@@ -21,10 +21,10 @@
 #include <stdbool.h>
 #include "config/project_config.h"
 #include "board/board.h"
-#include "drivers/adc.h"
 #include "drivers/log.h"
 #include "motor/motor.h"
-#include "motor/motor_speed_estimator.h"
+#include "motor/motor_3pwm.h"
+#include "motor/motor_openloop.h"
 
 extern usart2_handle_t USART2_H;
 
@@ -38,18 +38,29 @@ int __io_putchar(int ch)
 
 int main(void)
 {
-	const uint16_t as5600_sample_period_ms = 50u;
-	const uint16_t as5600_print_period_ms = 1000u;
-	const uint32_t as5600_adc_full_scale = 4095u;
-	const uint32_t as5600_angle_u16_full_scale = 65535u;
-	const uint32_t as5600_angle_deg_x10_full_scale = 3600u;
+	const uint16_t motor_test_pole_pairs = 7u;
+	const int32_t motor_test_target_mechanical_speed_mrpm = 60000;
+	const uint16_t motor_test_alignment_amplitude_permyriad = 1500u;
+	const uint16_t motor_test_run_amplitude_permyriad = 2000u;
+	const uint16_t motor_test_max_amplitude_permyriad = 10000u;
+	const uint16_t motor_test_update_period_ms = 1u;
+	const uint16_t motor_test_alignment_duration_ms = 400u;
+	const uint16_t motor_test_alignment_electrical_angle_u16 = 0u;
+	const uint32_t motor_test_phase_increment_ramp_step_u32 = 128u;
 
 	motor_handle_t motor_h = {
 			.measurements = {0},
-			.targets = {0},
-			.limits = {0},
+			.targets = {
+					.target_mechanical_speed_mrpm = motor_test_target_mechanical_speed_mrpm,
+					.target_amplitude_permyriad = motor_test_alignment_amplitude_permyriad,
+			},
+			.limits = {
+					.pole_pairs = motor_test_pole_pairs,
+					.max_target_mechanical_speed_mrpm = 0,
+					.max_amplitude_permyriad = motor_test_max_amplitude_permyriad,
+			},
 			.status = {
-					.mode = MOTOR_MODE_OBSERVE,
+					.mode = MOTOR_MODE_INACTIVE,
 					.is_initialized = false,
 					.is_enabled = false,
 					.has_valid_mechanical_angle = false,
@@ -59,74 +70,82 @@ int main(void)
 			.openloop = {0},
 			.speed_estimator = {0},
 	};
-	const motor_speed_estimator_cfg_t motor_speed_estimator_cfg = {
-			.motor_h = &motor_h,
-			.sample_period_ms = as5600_sample_period_ms,
+	const motor_3pwm_cfg_t motor_3pwm_cfg = {
+			.pwm_h = &PWM_H,
 	};
-	motor_speed_estimator_handle_t motor_speed_estimator_h = {0};
+	motor_3pwm_handle_t motor_3pwm_h = {0};
+	const motor_openloop_cfg_t motor_openloop_cfg = {
+			.motor_h = &motor_h,
+			.motor_3pwm_h = &motor_3pwm_h,
+			.update_period_ms = motor_test_update_period_ms,
+			.phase_increment_ramp_step_u32 = motor_test_phase_increment_ramp_step_u32,
+	};
+	motor_openloop_handle_t motor_openloop_h = {0};
 	uint32_t last_log_ms = 0u;
-	uint32_t last_as5600_sample_ms = 0u;
-	uint32_t last_as5600_print_ms = 0u;
-	uint16_t as5600_raw = 0u;
-	uint16_t mechanical_angle_u16 = 0u;
+	uint32_t last_openloop_update_ms = 0u;
+	uint32_t alignment_start_ms = 0u;
+	bool alignment_done = false;
 
 	board_init(); // drivers initialization
 	log_init(&USART2_H);
 	LOGI("APP", "boot");
-	LOGI("AS5600", "analog speed observation test active");
+	LOGI("MOPEN", "first powered open-loop spin test active");
 
-	if (!motor_speed_estimator_init(&motor_speed_estimator_h, &motor_speed_estimator_cfg))
+	if (!motor_3pwm_init(&motor_3pwm_h, &motor_3pwm_cfg))
 	{
-		LOGE("MEST", "init failed");
+		LOGE("M3PWM", "init failed");
 		while(1) {}
 	}
 
-	motor_h.status.is_initialized = true;
-	adc_start(&ADC1_IN0_H);
-	last_as5600_sample_ms = SYSTICK_GetTimeMs();
-	last_as5600_print_ms = last_as5600_sample_ms;
+	if (!motor_openloop_init(&motor_openloop_h, &motor_openloop_cfg))
+	{
+		LOGE("MOPEN", "init failed");
+		while(1) {}
+	}
+
+	if (!motor_openloop_apply(&motor_openloop_h, motor_test_alignment_electrical_angle_u16))
+	{
+		LOGE("MOPEN", "alignment apply failed");
+		while(1) {}
+	}
+
+	if (!motor_3pwm_start(&motor_3pwm_h))
+	{
+		LOGE("M3PWM", "start failed");
+		while(1) {}
+	}
+
+	gpio_write(MOTOR_EN.pin, true);
+	motor_h.status.is_enabled = true;
+	alignment_start_ms = SYSTICK_GetTimeMs();
+	last_openloop_update_ms = alignment_start_ms;
 
 	/* Loop forever */
 	while(1)
 	{
 		uint32_t now_ms = SYSTICK_GetTimeMs();
 
-		if ((now_ms - last_as5600_sample_ms) >= motor_speed_estimator_cfg.sample_period_ms)
+		if (alignment_done == false)
 		{
-			if (!adc_read(&ADC1_IN0_H, &as5600_raw))
+			if ((now_ms - alignment_start_ms) >= motor_test_alignment_duration_ms)
 			{
-				as5600_raw = ADC1_IN0_H.last_reading;
+				motor_h.targets.target_amplitude_permyriad = motor_test_run_amplitude_permyriad;
+				alignment_done = true;
+				last_openloop_update_ms = now_ms;
 			}
-
-			mechanical_angle_u16 = (uint16_t)(((uint32_t)as5600_raw * as5600_angle_u16_full_scale) / as5600_adc_full_scale);
-
-			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
+		}
+		else if ((now_ms - last_openloop_update_ms) >= motor_openloop_cfg.update_period_ms)
+		{
+			if (!motor_openloop_update(&motor_openloop_h))
 			{
-				LOGE("MEST", "update failed");
+				gpio_write(MOTOR_EN.pin, false);
+				motor_h.status.is_enabled = false;
+				(void)motor_3pwm_stop(&motor_3pwm_h);
+				LOGE("MOPEN", "update failed");
 				while(1) {}
 			}
 
-			adc_start(&ADC1_IN0_H);
-			last_as5600_sample_ms += motor_speed_estimator_cfg.sample_period_ms;
-		}
-
-		if ((now_ms - last_as5600_print_ms) >= as5600_print_period_ms)
-		{
-			uint32_t angle_deg_x10 = ((uint32_t)as5600_raw * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
-			int32_t speed_mrpm = motor_h.measurements.measured_mechanical_speed_mrpm;
-			int32_t speed_mrpm_abs = (speed_mrpm < 0) ? -speed_mrpm : speed_mrpm;
-			const char *speed_sign = (speed_mrpm < 0) ? "-" : "";
-
-			printf("AS5600 raw=%u angle_deg=%lu.%01lu speed_mrpm=%ld speed_rpm=%s%ld.%03ld\r\n",
-				   (unsigned)as5600_raw,
-				   (unsigned long)(angle_deg_x10 / 10u),
-				   (unsigned long)(angle_deg_x10 % 10u),
-				   (long)speed_mrpm,
-				   speed_sign,
-				   (long)(speed_mrpm_abs / 1000),
-				   (long)(speed_mrpm_abs % 1000));
-
-			last_as5600_print_ms += as5600_print_period_ms;
+			last_openloop_update_ms += motor_openloop_cfg.update_period_ms;
 		}
 
 		if ((now_ms - last_log_ms) >= 1000u)
