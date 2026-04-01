@@ -93,8 +93,8 @@ typedef struct {
  */
 typedef struct {
 	uint16_t previous_mechanical_angle_u16;
-	int32_t accumulated_mechanical_angle_delta;
-	uint16_t accumulated_sample_count;
+	int32_t accumulated_mechanical_angle_delta;  /* Sum of wrapped angle deltas within the active window. */
+	uint16_t accumulated_sample_count;           /* Number of angle samples accumulated in the active window. */
 	bool has_previous_mechanical_angle_sample;
 } motor_speed_estimator_state_t;
 

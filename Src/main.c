@@ -50,6 +50,8 @@ int main(void)
 	const uint16_t motor_test_ramp_duration_ms = 300u;
 	const uint16_t motor_test_alignment_duration_ms = 400u;
 	const uint16_t motor_test_alignment_electrical_angle_u16 = 0u;
+	const uint16_t motor_test_angle_adc_sample_period_us = 100u;
+	const uint16_t motor_test_angle_average_period_us = 1000u;
 	const uint16_t motor_test_speed_estimator_period_ms = 50u;
 	const uint16_t motor_test_speed_estimator_window_sample_count = 4u;
 	const uint16_t motor_test_status_print_period_ms = 1000u;
@@ -118,7 +120,12 @@ int main(void)
 	uint32_t last_speed_estimator_update_ms = 0u;
 	uint32_t last_status_print_ms = 0u;
 	uint32_t alignment_start_ms = 0u;
-	uint16_t as5600_raw = 0u;
+	uint64_t last_angle_adc_sample_us = 0u;
+	uint64_t last_angle_average_update_us = 0u;
+	uint32_t as5600_raw_accumulator = 0u;
+	uint16_t as5600_raw_sample_count = 0u;
+	uint16_t as5600_raw_averaged = 0u;
+	uint16_t as5600_raw_sample = 0u;
 	uint16_t mechanical_angle_u16 = 0u;
 	bool alignment_done = false;
 
@@ -163,12 +170,48 @@ int main(void)
 	last_openloop_update_ms = alignment_start_ms;
 	last_speed_estimator_update_ms = alignment_start_ms;
 	last_status_print_ms = alignment_start_ms;
+	last_angle_adc_sample_us = SYSTICK_GetTimeUs();
+	last_angle_average_update_us = last_angle_adc_sample_us;
 	adc_start(&ADC1_IN0_H);
 
 	/* Loop forever */
 	while(1)
 	{
 		uint32_t now_ms = SYSTICK_GetTimeMs();
+		uint64_t now_us = SYSTICK_GetTimeUs();
+
+		if ((now_us - last_angle_adc_sample_us) >= motor_test_angle_adc_sample_period_us)
+		{
+			if (adc_read(&ADC1_IN0_H, &as5600_raw_sample))
+			{
+				as5600_raw_accumulator += as5600_raw_sample;
+				as5600_raw_sample_count++;
+			}
+
+			adc_start(&ADC1_IN0_H);
+			last_angle_adc_sample_us += motor_test_angle_adc_sample_period_us;
+		}
+
+		if ((now_us - last_angle_average_update_us) >= motor_test_angle_average_period_us)
+		{
+			if (as5600_raw_sample_count > 0u)
+			{
+				as5600_raw_averaged = (uint16_t)(as5600_raw_accumulator / as5600_raw_sample_count);
+				as5600_raw_accumulator = 0u;
+				as5600_raw_sample_count = 0u;
+			}
+
+			mechanical_angle_u16 =
+					(uint16_t)(((uint32_t)as5600_raw_averaged * as5600_angle_u16_full_scale) / as5600_adc_full_scale);
+			if (motor_test_sensor_direction < 0)
+			{
+				mechanical_angle_u16 = (uint16_t)(0u - mechanical_angle_u16);
+			}
+
+			motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
+			motor_h.status.has_valid_mechanical_angle = true;
+			last_angle_average_update_us += motor_test_angle_average_period_us;
+		}
 
 		if (alignment_done == false)
 		{
@@ -195,17 +238,6 @@ int main(void)
 
 		if ((now_ms - last_speed_estimator_update_ms) >= motor_speed_estimator_cfg.sample_period_ms)
 		{
-			if (!adc_read(&ADC1_IN0_H, &as5600_raw))
-			{
-				as5600_raw = ADC1_IN0_H.last_reading;
-			}
-
-			mechanical_angle_u16 = (uint16_t)(((uint32_t)as5600_raw * as5600_angle_u16_full_scale) / as5600_adc_full_scale);
-			if (motor_test_sensor_direction < 0)
-			{
-				mechanical_angle_u16 = (uint16_t)(0u - mechanical_angle_u16);
-			}
-
 			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
 			{
 				gpio_write(MOTOR_EN.pin, false);
@@ -215,7 +247,6 @@ int main(void)
 				while(1) {}
 			}
 
-			adc_start(&ADC1_IN0_H);
 			last_speed_estimator_update_ms += motor_speed_estimator_cfg.sample_period_ms;
 		}
 
@@ -224,7 +255,7 @@ int main(void)
 			int32_t target_mrpm = motor_h.targets.target_mechanical_speed_mrpm;
 			int32_t est_mrpm = motor_h.measurements.measured_mechanical_speed_mrpm;
 			int32_t err_mrpm = target_mrpm - est_mrpm;
-			uint32_t angle_deg_x10 = ((uint32_t)as5600_raw * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
+			uint32_t angle_deg_x10 = ((uint32_t)as5600_raw_averaged * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
 			const char *est_sign = (est_mrpm < 0) ? "-" : "";
 			const char *err_sign = (err_mrpm < 0) ? "-" : "";
 			int32_t est_mrpm_abs = (est_mrpm < 0) ? -est_mrpm : est_mrpm;
@@ -234,8 +265,8 @@ int main(void)
 					 (motor_h.openloop.current_phase_increment_u32 == motor_h.openloop.target_phase_increment_u32))
 					? "yes" : "no";
 
-			printf("OL raw=%u angle_deg=%lu.%01lu target_mrpm=%ld est_mrpm=%ld err_mrpm=%ld target_rpm=%ld.%03ld est_rpm=%s%ld.%03ld err_rpm=%s%ld.%03ld steady=%s\r\n",
-				   (unsigned)as5600_raw,
+			printf("OL raw_avg=%u angle_deg=%lu.%01lu target_mrpm=%ld est_mrpm=%ld err_mrpm=%ld target_rpm=%ld.%03ld est_rpm=%s%ld.%03ld err_rpm=%s%ld.%03ld steady=%s\r\n",
+				   (unsigned)as5600_raw_averaged,
 				   (unsigned long)(angle_deg_x10 / 10u),
 				   (unsigned long)(angle_deg_x10 % 10u),
 				   (long)target_mrpm,

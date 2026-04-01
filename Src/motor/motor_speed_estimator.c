@@ -34,6 +34,7 @@ bool motor_speed_estimator_init(motor_speed_estimator_handle_t *motor_speed_esti
 
 	motor_handle_t *motor_h = motor_speed_estimator_cfg->motor_h;
 
+	/* Reset estimator history and the active speed window. */
 	motor_speed_estimator_h->cfg = motor_speed_estimator_cfg;
 	motor_speed_estimator_h->motor_h = motor_h;
 	motor_h->speed_estimator.previous_mechanical_angle_u16 = 0u;
@@ -60,6 +61,7 @@ bool motor_speed_estimator_update(motor_speed_estimator_handle_t *motor_speed_es
 	motor_h->measurements.mechanical_angle_u16 = mechanical_angle_u16;
 	motor_h->status.has_valid_mechanical_angle = true;
 
+	/* Seed the estimator with the first mechanical angle sample. */
 	if (motor_h->speed_estimator.has_previous_mechanical_angle_sample == false)
 	{
 		motor_h->speed_estimator.previous_mechanical_angle_u16 = mechanical_angle_u16;
@@ -71,17 +73,20 @@ bool motor_speed_estimator_update(motor_speed_estimator_handle_t *motor_speed_es
 		return true;
 	}
 
+	/* Convert the new sample into a signed wrapped angle delta. */
 	int32_t mechanical_angle_delta = motor_speed_estimator_angle_delta_u16(
 			mechanical_angle_u16,
 			motor_h->speed_estimator.previous_mechanical_angle_u16);
 
+	/* Accumulate angle delta and sample count for the active speed window. */
 	motor_h->speed_estimator.previous_mechanical_angle_u16 = mechanical_angle_u16;
 	motor_h->speed_estimator.accumulated_mechanical_angle_delta += mechanical_angle_delta;
 	motor_h->speed_estimator.accumulated_sample_count++;
 
+	/* Publish one new speed estimate when the configured window is complete. */
 	if (motor_h->speed_estimator.accumulated_sample_count >= motor_speed_estimator_h->cfg->window_sample_count)
 	{
-		/* A longer differentiation window reduces visible speed-estimate noise. */
+		/* total_angle_delta / total_window_time -> signed mechanical speed in mrpm. */
 		int64_t mechanical_speed_mrpm_num =
 				(int64_t)motor_h->speed_estimator.accumulated_mechanical_angle_delta *
 				MOTOR_SPEED_ESTIMATOR_MS_PER_MINUTE *
