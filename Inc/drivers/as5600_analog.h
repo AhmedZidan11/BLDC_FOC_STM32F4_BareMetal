@@ -42,8 +42,8 @@ typedef enum {
 typedef struct {
 	adc_handle_t *adc_h;
 	uint16_t adc_full_scale;
-	uint32_t raw_sample_period_us;
-	uint32_t angle_publish_period_us;
+	uint32_t raw_sample_period_us;      /* Fast raw ADC acquisition interval. */
+	uint32_t angle_publish_period_us;   /* Averaged-angle publication interval. */
 	as5600_analog_direction_t mechanical_angle_direction;
 } as5600_analog_cfg_t;
 
@@ -53,13 +53,13 @@ typedef struct {
  */
 typedef struct {
 	const as5600_analog_cfg_t *cfg;
-	uint32_t raw_accumulator;
-	uint16_t raw_sample_count;
-	uint16_t last_raw_averaged;
+	uint32_t raw_accumulator;           /* Sum of raw ADC codes within the active window. */
+	uint16_t raw_sample_count;          /* Number of raw ADC codes accumulated in the active window. */
+	uint16_t last_raw_averaged;         /* Most recent averaged raw ADC code. */
 	uint16_t mechanical_angle_u16;
 	uint64_t last_raw_sample_time_us;
 	uint64_t last_angle_publish_time_us;
-	bool has_new_angle_sample;
+	bool has_new_angle_sample;          /* True only on calls that publish a new averaged angle. */
 	bool is_initialized;
 } as5600_analog_handle_t;
 
