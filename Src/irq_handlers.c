@@ -8,6 +8,7 @@
 #include "stm32f4xx.h"
 #include "drivers/exti.h"
 #include "drivers/adc.h"
+#include "drivers/as5600_analog.h"
 #include "drivers/usart2.h"
 #include "drivers/systick.h"
 
@@ -26,6 +27,7 @@ extern adc_handle_t ADC1_IN0_H;
 void ADC_IRQHandler(void)
 {
 	adc_irq_handler(&ADC1_IN0_H);
+	as5600_analog_adc_irq_handler();
 }
 
 extern usart2_handle_t USART2_H;

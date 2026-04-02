@@ -9,11 +9,11 @@
  * existing ADC driver.
  *
  * Responsibilities:
- * - schedule raw ADC sample acquisition
- * - accumulate and average raw ADC samples
+ * - schedule fixed-period raw ADC conversion start requests
+ * - consume completed raw ADC samples from ADC completion handling
  * - convert averaged raw ADC data into mechanical angle
  * - apply sensor-direction mapping
- * - publish one averaged mechanical angle sample at a slower fixed interval
+ * - publish one averaged mechanical angle sample after a fixed raw-sample decimation
  *
  * @note Mechanical angle uses full-turn uint16 units
  *       (0..65535 <=> 0..1 mechanical revolution).
@@ -42,8 +42,8 @@ typedef enum {
 typedef struct {
 	adc_handle_t *adc_h;
 	uint16_t adc_full_scale;
-	uint32_t raw_sample_period_us;      /* Fast raw ADC acquisition interval. */
-	uint32_t angle_publish_period_us;   /* Averaged-angle publication interval. */
+	uint32_t raw_sample_period_us;      /* SysTick-driven raw ADC conversion start interval. */
+	uint16_t raw_samples_per_publish;   /* Publish one averaged angle after this many raw samples. */
 	as5600_analog_direction_t mechanical_angle_direction;
 } as5600_analog_cfg_t;
 
@@ -53,13 +53,13 @@ typedef struct {
  */
 typedef struct {
 	const as5600_analog_cfg_t *cfg;
-	uint32_t raw_accumulator;           /* Sum of raw ADC codes within the active window. */
-	uint16_t raw_sample_count;          /* Number of raw ADC codes accumulated in the active window. */
-	uint16_t last_raw_averaged;         /* Most recent averaged raw ADC code. */
-	uint16_t mechanical_angle_u16;
-	uint64_t last_raw_sample_time_us;
-	uint64_t last_angle_publish_time_us;
-	bool has_new_angle_sample;          /* True only on calls that publish a new averaged angle. */
+	volatile uint32_t raw_accumulator;  /* Sum of raw ADC codes within the active publish window. */
+	volatile uint16_t raw_sample_count; /* Number of raw ADC codes accumulated in the active publish window. */
+	volatile uint16_t last_raw_averaged;/* Most recent averaged raw ADC code. */
+	volatile uint16_t mechanical_angle_u16;
+	uint64_t next_raw_sample_time_us;
+	volatile bool raw_conversion_pending;
+	volatile bool has_new_angle_sample; /* True after ADC completion publishes one new averaged angle. */
 	bool is_initialized;
 } as5600_analog_handle_t;
 
@@ -74,13 +74,21 @@ bool as5600_analog_init(as5600_analog_handle_t *as5600_analog_h,
 						const as5600_analog_cfg_t *as5600_analog_cfg);
 
 /**
- * @brief Update AS5600 analog acquisition and averaged angle publication.
+ * @brief Service SysTick-based raw ADC conversion scheduling.
  *
  * @param as5600_analog_h Pointer to AS5600 analog handle.
  * @param now_us Current time in microseconds.
- * @return true if update succeeded, false otherwise.
+ * @return true if scheduling state is valid, false otherwise.
  */
-bool as5600_analog_update(as5600_analog_handle_t *as5600_analog_h,
-						  uint64_t now_us);
+bool as5600_analog_service(as5600_analog_handle_t *as5600_analog_h,
+						   uint64_t now_us);
+
+/**
+ * @brief Consume one completed ADC sample for the active AS5600 analog handle.
+ *
+ * Call from the ADC completion IRQ path after adc_irq_handler() updates the ADC
+ * driver handle state.
+ */
+void as5600_analog_adc_irq_handler(void);
 
 #endif /* DRIVERS_AS5600_ANALOG_H */
