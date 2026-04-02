@@ -7,6 +7,11 @@
 #include "motor/motor_driver.h"
 #include <stddef.h>
 
+/**
+ * @brief Build a safe all-FLOAT command map.
+ *
+ * @return Per-phase command map with every phase set to FLOAT.
+ */
 static motor_driver_cmd_map_t motor_driver_cmd_map_default(void)
 {
 	motor_driver_cmd_map_t cmd_map = {
@@ -60,6 +65,7 @@ static bool motor_driver_set_pwm_permyriad(pwm_tim1_handle_t *pwm_h,
 		duty_permyriad = 10000u;
 	}
 
+	/* Convert duty from permyriad units into TIM1 compare ticks. */
 	uint16_t duty_ticks = (uint16_t)(((uint32_t)pwm_h->arr * (uint32_t)duty_permyriad) / 10000u);
 	return pwm_tim1_set_duty(pwm_h, ch, duty_ticks);
 }
@@ -86,7 +92,7 @@ static bool motor_driver_apply_pwm_map(motor_driver_handle_t *motor_driver_h)
 	uint16_t duty_b = 0u;
 	uint16_t duty_c = 0u;
 
-	/* Convert command map to 3-PWM duty values. */
+	/* Convert the command map into 3-PWM duty values. */
 	if (motor_driver_h->last_cmd_map.phase_a == MOTOR_DRIVER_CMD_HIGH)
 	{
 		duty_a = motor_driver_h->cfg->pwm_duty_permyriad;
@@ -100,7 +106,7 @@ static bool motor_driver_apply_pwm_map(motor_driver_handle_t *motor_driver_h)
 		duty_c = motor_driver_h->cfg->pwm_duty_permyriad;
 	}
 
-	/* Update TIM1 compare registers for all three phases. */
+	/* Write the new duty values to the three TIM1 channels. */
 	if (!motor_driver_set_pwm_permyriad(motor_driver_h->cfg->pwm_h, 1u, duty_a)) return false;
 	if (!motor_driver_set_pwm_permyriad(motor_driver_h->cfg->pwm_h, 2u, duty_b)) return false;
 	if (!motor_driver_set_pwm_permyriad(motor_driver_h->cfg->pwm_h, 3u, duty_c)) return false;
@@ -132,6 +138,7 @@ bool motor_driver_start(motor_driver_handle_t *motor_driver_h)
 	if ((motor_driver_h->cfg == NULL) || (motor_driver_h->cfg->pwm_h == NULL)) return false;
 	if (motor_driver_h->is_initialized == false) return false;
 
+	/* Start the low-level PWM stage after the driver state is ready. */
 	if (!pwm_tim1_start(motor_driver_h->cfg->pwm_h)) return false;
 
 	motor_driver_h->is_started = true;
@@ -173,6 +180,7 @@ motor_driver_cmd_map_t motor_driver_get_cmd_map(const motor_driver_handle_t *mot
 {
 	if (motor_driver_h == NULL)
 	{
+		/* Return a safe default map when the driver handle is not valid. */
 		return motor_driver_cmd_map_default();
 	}
 

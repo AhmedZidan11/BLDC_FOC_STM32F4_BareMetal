@@ -37,8 +37,8 @@
 typedef struct {
 	motor_handle_t *motor_h;
 	motor_3pwm_handle_t *motor_3pwm_h;
-	uint16_t update_period_ms;
-	uint32_t phase_increment_ramp_step_u32;
+	uint16_t update_period_ms;            /* Fixed control update period for phase update. */
+	uint32_t phase_increment_ramp_step_u32;/* Largest phase-increment change in one update step. */
 } motor_openloop_cfg_t;
 
 /**
@@ -54,6 +54,10 @@ typedef struct {
 
 /**
  * @brief Initialize open-loop handle.
+ *
+ * This function checks the motor limits, calculates the target phase
+ * increment from the mechanical speed, and resets the phase accumulator
+ * state.
  *
  * @param motor_openloop_h Pointer to open-loop handle.
  * @param motor_openloop_cfg Pointer to open-loop configuration.
@@ -75,6 +79,10 @@ bool motor_openloop_apply(motor_openloop_handle_t *motor_openloop_h,
 
 /**
  * @brief Advance electrical angle and apply the updated open-loop output.
+ *
+ * This function moves the current phase increment toward the target phase
+ * increment, advances the shared phase accumulator, and applies the next
+ * electrical angle through the 3-PWM stage.
  *
  * @param motor_openloop_h Pointer to open-loop handle.
  * @return true if update succeeded, false otherwise.

@@ -6,7 +6,7 @@
  * @brief Bridge layer between motor commutation logic and PWM hardware driver.
  *
  * This module converts a logical 3-phase commutation map into per-phase
- * commands and applies them to the TIM1 PWM driver.
+ * commands and sends them to the TIM1 PWM driver.
  *
  * Responsibilities:
  * - accept phase commutation state from motor_6step
@@ -41,6 +41,9 @@ typedef struct {
 
 /**
  * @brief Motor driver configuration.
+ *
+ * This layer stays below the higher-level commutation code and only turns
+ * abstract phase commands into TIM1 PWM duties.
  *
  */
 typedef struct {
@@ -101,6 +104,9 @@ bool motor_driver_apply_phase_map(motor_driver_handle_t *motor_driver_h,
 
 /**
  * @brief Get last applied drive command map.
+ *
+ * This lets other code read the last bridge output state without touching
+ * the low-level PWM driver.
  *
  * @param motor_driver_h Pointer to motor driver handle.
  * @return Last stored command map. Invalid handle returns all FLOAT.
