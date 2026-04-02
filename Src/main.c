@@ -53,12 +53,15 @@ int main(void)
 	const uint16_t motor_test_alignment_electrical_angle_u16 = 0u;
 	const uint16_t motor_test_angle_adc_sample_period_us = 100u;
 	const uint16_t motor_test_angle_average_period_us = 1000u;
-	const uint16_t motor_test_speed_estimator_period_ms = 50u;
-	const uint16_t motor_test_speed_estimator_window_sample_count = 4u;
+	const uint16_t motor_test_angle_publish_raw_sample_count =
+			(uint16_t)(motor_test_angle_average_period_us / motor_test_angle_adc_sample_period_us);
+	const uint32_t motor_test_angle_publish_period_us =
+			(uint32_t)motor_test_angle_adc_sample_period_us *
+			(uint32_t)motor_test_angle_publish_raw_sample_count;
+	const uint16_t motor_test_speed_estimator_history_sample_count = 4u;
 	const uint16_t motor_test_status_print_period_ms = 1000u;
 	const uint64_t motor_test_mrpm_per_rpm = 1000ULL;
 	const uint32_t as5600_adc_full_scale = 4095u;
-	const uint32_t as5600_angle_deg_x10_full_scale = 3600u;
 	const uint32_t motor_test_ramp_update_count =
 			(uint32_t)((motor_test_ramp_duration_ms + motor_test_update_period_ms - 1u) /
 					  motor_test_update_period_ms);
@@ -96,7 +99,11 @@ int main(void)
 					.has_valid_mechanical_speed = false,
 			},
 			.openloop = {0},
-			.speed_estimator = {0},
+			.speed_estimator = {
+					.mechanical_angle_history_u16 = {0},
+					.history_write_index = 0u,
+					.history_valid_count = 0u,
+			},
 	};
 	const motor_3pwm_cfg_t motor_3pwm_cfg = {
 			.pwm_h = &PWM_H,
@@ -111,15 +118,15 @@ int main(void)
 	motor_openloop_handle_t motor_openloop_h = {0};
 	const motor_speed_estimator_cfg_t motor_speed_estimator_cfg = {
 			.motor_h = &motor_h,
-			.sample_period_ms = motor_test_speed_estimator_period_ms,
-			.window_sample_count = motor_test_speed_estimator_window_sample_count,
+			.sample_period_us = motor_test_angle_publish_period_us,
+			.history_sample_count = motor_test_speed_estimator_history_sample_count,
 	};
 	motor_speed_estimator_handle_t motor_speed_estimator_h = {0};
 	const as5600_analog_cfg_t as5600_analog_cfg = {
 			.adc_h = &ADC1_IN0_H,
 			.adc_full_scale = (uint16_t)as5600_adc_full_scale,
 			.raw_sample_period_us = motor_test_angle_adc_sample_period_us,
-			.angle_publish_period_us = motor_test_angle_average_period_us,
+			.raw_samples_per_publish = motor_test_angle_publish_raw_sample_count,
 			.mechanical_angle_direction = (motor_test_sensor_direction < 0) ?
 					AS5600_ANALOG_DIRECTION_REVERSE :
 					AS5600_ANALOG_DIRECTION_FORWARD,
@@ -127,7 +134,6 @@ int main(void)
 	as5600_analog_handle_t as5600_analog_h = {0};
 	uint32_t last_log_ms = 0u;
 	uint32_t last_openloop_update_ms = 0u;
-	uint32_t last_speed_estimator_update_ms = 0u;
 	uint32_t last_status_print_ms = 0u;
 	uint32_t alignment_start_ms = 0u;
 	uint16_t mechanical_angle_u16 = 0u;
@@ -179,12 +185,7 @@ int main(void)
 	motor_h.status.is_enabled = true;
 	alignment_start_ms = SYSTICK_GetTimeMs();
 	last_openloop_update_ms = alignment_start_ms;
-	last_speed_estimator_update_ms = alignment_start_ms;
 	last_status_print_ms = alignment_start_ms;
-	/* Seed AS5600 acquisition timing from the current microsecond timebase. */
-	as5600_analog_h.last_raw_sample_time_us = SYSTICK_GetTimeUs();
-	as5600_analog_h.last_angle_publish_time_us = as5600_analog_h.last_raw_sample_time_us;
-	adc_start(&ADC1_IN0_H);
 
 	/* Loop forever */
 	while(1)
@@ -192,8 +193,8 @@ int main(void)
 		uint32_t now_ms = SYSTICK_GetTimeMs();
 		uint64_t now_us = SYSTICK_GetTimeUs();
 
-		/* Update AS5600 raw acquisition and averaged angle publication. */
-		if (!as5600_analog_update(&as5600_analog_h, now_us))
+		/* Service SysTick-driven AS5600 raw-sample scheduling. */
+		if (!as5600_analog_service(&as5600_analog_h, now_us))
 		{
 			gpio_write(MOTOR_EN.pin, false);
 			motor_h.status.is_enabled = false;
@@ -202,13 +203,21 @@ int main(void)
 			while(1) {}
 		}
 
-		/* Consume one new published AS5600 mechanical-angle sample. */
-		if (as5600_analog_h.has_new_angle_sample == true)
+		/* Consume one fixed-period published AS5600 mechanical-angle sample. */
+		if (as5600_analog_consume_published_sample(&as5600_analog_h, &mechanical_angle_u16, NULL))
 		{
-			mechanical_angle_u16 = as5600_analog_h.mechanical_angle_u16;
 			/* Publish the latest averaged sensor angle into the shared motor state. */
-			motor_h.measurements.mechanical_angle_u16 = as5600_analog_h.mechanical_angle_u16;
+			motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
 			motor_h.status.has_valid_mechanical_angle = true;
+			/* Feed the estimator with one fixed-period published angle sample. */
+			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
+			{
+				gpio_write(MOTOR_EN.pin, false);
+				motor_h.status.is_enabled = false;
+				(void)motor_3pwm_stop(&motor_3pwm_h);
+				LOGE("MEST", "update failed");
+				while(1) {}
+			}
 		}
 
 		/* Hold the initial alignment vector before enabling phase progression. */
@@ -236,54 +245,66 @@ int main(void)
 			last_openloop_update_ms += motor_openloop_cfg.update_period_ms;
 		}
 
-		/* Feed the latest published mechanical angle into the speed estimator. */
-		if ((now_ms - last_speed_estimator_update_ms) >= motor_speed_estimator_cfg.sample_period_ms)
-		{
-			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
-			{
-				gpio_write(MOTOR_EN.pin, false);
-				motor_h.status.is_enabled = false;
-				(void)motor_3pwm_stop(&motor_3pwm_h);
-				LOGE("MEST", "update failed");
-				while(1) {}
-			}
-
-			last_speed_estimator_update_ms += motor_speed_estimator_cfg.sample_period_ms;
-		}
-
-		/* Convert the averaged raw ADC code into display angle in 0.1 degree units. */
+		/* Print the exact estimator window used by the latest speed calculation. */
 		if ((now_ms - last_status_print_ms) >= motor_test_status_print_period_ms)
 		{
 			int32_t target_mrpm = motor_h.targets.target_mechanical_speed_mrpm;
-			int32_t est_mrpm = motor_h.measurements.measured_mechanical_speed_mrpm;
-			int32_t err_mrpm = target_mrpm - est_mrpm;
-			uint32_t angle_deg_x10 =
-					((uint32_t)as5600_analog_h.last_raw_averaged * as5600_angle_deg_x10_full_scale) / as5600_adc_full_scale;
-			const char *est_sign = (est_mrpm < 0) ? "-" : "";
-			const char *err_sign = (err_mrpm < 0) ? "-" : "";
-			int32_t est_mrpm_abs = (est_mrpm < 0) ? -est_mrpm : est_mrpm;
-			int32_t err_mrpm_abs = (err_mrpm < 0) ? -err_mrpm : err_mrpm;
+			int32_t est_mrpm_inst = motor_h.measurements.measured_mechanical_speed_mrpm;
+			const char *est_inst_sign = (est_mrpm_inst < 0) ? "-" : "";
+			int32_t est_mrpm_inst_abs = (est_mrpm_inst < 0) ? -est_mrpm_inst : est_mrpm_inst;
+			uint16_t a0 = 0u;
+			uint16_t a1 = 0u;
+			uint16_t a2 = 0u;
+			uint16_t a3 = 0u;
+			uint16_t a4 = 0u;
+			unsigned long elapsed_time_us = 0u;
+			unsigned long dt01_us = 0u;
+			unsigned long dt12_us = 0u;
+			unsigned long dt23_us = 0u;
+			unsigned long dt34_us = 0u;
 			const char *steady_str =
 					((alignment_done == true) &&
 					 (motor_h.openloop.current_phase_increment_u32 == motor_h.openloop.target_phase_increment_u32))
 					? "yes" : "no";
 
-			printf("OL raw_avg=%u angle_deg=%lu.%01lu target_mrpm=%ld est_mrpm=%ld err_mrpm=%ld target_rpm=%ld.%03ld est_rpm=%s%ld.%03ld err_rpm=%s%ld.%03ld steady=%s\r\n",
-				   (unsigned)as5600_analog_h.last_raw_averaged,
-				   (unsigned long)(angle_deg_x10 / 10u),
-				   (unsigned long)(angle_deg_x10 % 10u),
-				   (long)target_mrpm,
-				   (long)est_mrpm,
-				   (long)err_mrpm,
+			/* Extract the stored oldest-to-newest estimator window endpoints for logging. */
+			if (motor_h.speed_estimator.last_window_point_count >= 5u)
+			{
+				a0 = motor_h.speed_estimator.last_window_angle_u16[0];
+				a1 = motor_h.speed_estimator.last_window_angle_u16[1];
+				a2 = motor_h.speed_estimator.last_window_angle_u16[2];
+				a3 = motor_h.speed_estimator.last_window_angle_u16[3];
+				a4 = motor_h.speed_estimator.last_window_angle_u16[4];
+
+				/* Each retained sliding-window interval equals the configured fixed publish period. */
+				dt01_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
+				dt12_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
+				dt23_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
+				dt34_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
+			}
+
+			/* Cast the total estimator window duration into a 32-bit debug-print value. */
+			elapsed_time_us = (unsigned long)motor_h.speed_estimator.last_elapsed_time_us;
+
+			printf("OL target_rpm=%ld.%03ld est_rpm_inst=%s%ld.%03ld delta_angle_counts=%ld elapsed_time_us=%lu steady=%s\r\n",
 				   (long)(target_mrpm / 1000),
 				   (long)(target_mrpm % 1000),
-				   est_sign,
-				   (long)(est_mrpm_abs / 1000),
-				   (long)(est_mrpm_abs % 1000),
-				   err_sign,
-				   (long)(err_mrpm_abs / 1000),
-				   (long)(err_mrpm_abs % 1000),
+				   est_inst_sign,
+				   (long)(est_mrpm_inst_abs / 1000),
+				   (long)(est_mrpm_inst_abs % 1000),
+				   (long)motor_h.speed_estimator.last_mechanical_angle_delta_counts,
+				   elapsed_time_us,
 				   steady_str);
+			printf("OL win a0=%u a1=%u a2=%u a3=%u a4=%u dt01=%lu dt12=%lu dt23=%lu dt34=%lu\r\n",
+				   (unsigned)a0,
+				   (unsigned)a1,
+				   (unsigned)a2,
+				   (unsigned)a3,
+				   (unsigned)a4,
+				   dt01_us,
+				   dt12_us,
+				   dt23_us,
+				   dt34_us);
 
 			last_status_print_ms += motor_test_status_print_period_ms;
 		}

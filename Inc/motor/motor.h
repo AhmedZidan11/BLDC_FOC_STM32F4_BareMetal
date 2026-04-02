@@ -23,6 +23,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define MOTOR_SPEED_ESTIMATOR_MAX_HISTORY_SAMPLES   64u
+#define MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE   (MOTOR_SPEED_ESTIMATOR_MAX_HISTORY_SAMPLES + 1u)
+
 /**
  * @brief Motor operating mode within the current project scope.
  *
@@ -92,10 +95,13 @@ typedef struct {
  *
  */
 typedef struct {
-	uint16_t previous_mechanical_angle_u16;
-	int32_t accumulated_mechanical_angle_delta;  /* Sum of wrapped angle deltas within the active window. */
-	uint16_t accumulated_sample_count;           /* Number of angle samples accumulated in the active window. */
-	bool has_previous_mechanical_angle_sample;
+	uint16_t mechanical_angle_history_u16[MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE];
+	uint16_t history_write_index;     /* Next write position; after each write it points to the oldest retained sample. */
+	uint16_t history_valid_count;     /* Number of valid angle samples currently stored in history. */
+	int32_t last_mechanical_angle_delta_counts;
+	uint32_t last_elapsed_time_us;
+	uint16_t last_window_angle_u16[MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE];
+	uint16_t last_window_point_count;
 } motor_speed_estimator_state_t;
 
 /**

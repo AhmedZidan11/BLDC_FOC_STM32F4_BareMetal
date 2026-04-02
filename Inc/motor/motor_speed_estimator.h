@@ -30,8 +30,8 @@
  */
 typedef struct {
 	motor_handle_t *motor_h;
-	uint16_t sample_period_ms;
-	uint16_t window_sample_count; /* Number of angle-delta samples per speed window. */
+	uint32_t sample_period_us;       /* Fixed published angle-sample period. */
+	uint16_t history_sample_count; /* Number of sample intervals between the current angle and the comparison angle. */
 } motor_speed_estimator_cfg_t;
 
 /**
