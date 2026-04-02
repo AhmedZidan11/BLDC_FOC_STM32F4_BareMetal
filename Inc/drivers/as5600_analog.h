@@ -55,8 +55,9 @@ typedef struct {
 	const as5600_analog_cfg_t *cfg;
 	volatile uint32_t raw_accumulator;  /* Sum of raw ADC codes within the active publish window. */
 	volatile uint16_t raw_sample_count; /* Number of raw ADC codes accumulated in the active publish window. */
-	volatile uint16_t last_raw_averaged;/* Most recent averaged raw ADC code. */
+	volatile uint16_t last_raw_averaged;/* Most recent integer raw ADC average kept for diagnostics. */
 	volatile uint16_t mechanical_angle_u16;
+	uint32_t published_sample_period_us;/* published_dt = raw_sample_period_us * raw_samples_per_publish. */
 	uint64_t next_raw_sample_time_us;
 	volatile bool raw_conversion_pending;
 	volatile bool has_new_angle_sample; /* True after ADC completion publishes one new averaged angle. */
@@ -82,6 +83,18 @@ bool as5600_analog_init(as5600_analog_handle_t *as5600_analog_h,
  */
 bool as5600_analog_service(as5600_analog_handle_t *as5600_analog_h,
 						   uint64_t now_us);
+
+/**
+ * @brief Consume one published averaged angle sample.
+ *
+ * @param as5600_analog_h Pointer to AS5600 analog handle.
+ * @param mechanical_angle_u16 Pointer to the published mechanical angle output.
+ * @param raw_averaged Pointer to the published averaged raw ADC code output, optional.
+ * @return true if one new published sample was consumed, false otherwise.
+ */
+bool as5600_analog_consume_published_sample(as5600_analog_handle_t *as5600_analog_h,
+											uint16_t *mechanical_angle_u16,
+											uint16_t *raw_averaged);
 
 /**
  * @brief Consume one completed ADC sample for the active AS5600 analog handle.
