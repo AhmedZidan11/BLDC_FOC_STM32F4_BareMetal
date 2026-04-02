@@ -26,8 +26,8 @@
  *
  */
 typedef enum {
-	ADC_MODE_CONTINUOUS = 0U,    /**< Continuous conversion (CONT=1 */
-	ADC_MODE_SINGLE = 1U,        /**< Single conversion (CONT=0) */
+	ADC_MODE_CONTINUOUS = 1U,    /**< Continuous conversion (CONT=1 */
+	ADC_MODE_SINGLE = 0U,        /**< Single conversion (CONT=0) */
 } adc_mode_t;
 
 /**
