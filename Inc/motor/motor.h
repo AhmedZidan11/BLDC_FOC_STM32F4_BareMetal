@@ -91,18 +91,21 @@ typedef struct {
 } motor_openloop_state_t;
 
 /**
- * @brief Speed-estimator runtime state.
+ * @brief Reference speed-estimator runtime state.
  *
  */
 typedef struct {
-	uint16_t mechanical_angle_history_u16[MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE];
-	uint16_t history_write_index;     /* Next write position; after each write it points to the oldest retained sample. */
-	uint16_t history_valid_count;     /* Number of valid angle samples currently stored in history. */
-	int32_t last_mechanical_angle_delta_counts;
-	uint32_t last_elapsed_time_us;
-	uint16_t last_window_angle_u16[MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE];
+	uint64_t sample_timestamp_history_us[MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE];
+	int64_t cumulative_unwrapped_angle_history_counts[MOTOR_SPEED_ESTIMATOR_HISTORY_BUFFER_SIZE];
+	uint16_t history_write_index;     /* Next write position; when full this also marks the oldest sample. */
+	uint16_t history_valid_count;     /* Number of valid samples currently stored in the ring buffer. */
 	uint16_t last_window_point_count;
-} motor_speed_estimator_state_t;
+	uint16_t previous_raw_mechanical_angle_u16;
+	bool has_previous_raw_mechanical_angle;
+	int32_t last_mechanical_angle_delta_counts; /* Latest wrapped angle step between adjacent raw samples. */
+	uint64_t last_elapsed_time_us;
+	int64_t cumulative_unwrapped_mechanical_angle_counts;
+} motor_speed_reference_estimator_state_t;
 
 /**
  * @brief Shared motor runtime container.
@@ -114,7 +117,7 @@ typedef struct {
 	motor_limits_t limits;
 	motor_status_t status;
 	motor_openloop_state_t openloop;
-	motor_speed_estimator_state_t speed_estimator;
+	motor_speed_reference_estimator_state_t speed_reference_estimator;
 } motor_handle_t;
 
 #endif /* MOTOR_MOTOR_H */
