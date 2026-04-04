@@ -27,7 +27,12 @@ extern adc_handle_t ADC1_IN0_H;
 void ADC_IRQHandler(void)
 {
 	adc_irq_handler(&ADC1_IN0_H);
-	as5600_analog_adc_irq_handler();
+
+	/* Forward ADC completion only when the driver latched a fresh sample. */
+	if (ADC1_IN0_H.adc_data_ready == true)
+	{
+		as5600_analog_adc_irq_handler();
+	}
 }
 
 extern usart2_handle_t USART2_H;

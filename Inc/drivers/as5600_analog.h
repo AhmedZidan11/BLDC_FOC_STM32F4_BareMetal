@@ -3,17 +3,18 @@
 
 /**
  * @file as5600_analog.h
- * @brief Narrow AS5600 analog-angle acquisition helper.
+ * @brief Sensor-specific AS5600 analog angle acquisition helper.
  *
- * This module owns AS5600-specific analog acquisition details above the
- * existing ADC driver.
+ * This module keeps the AS5600 analog angle path separate from the
+ * generic ADC driver.
  *
  * Responsibilities:
- * - schedule fixed-period raw ADC conversion start requests
- * - consume completed raw ADC samples from ADC completion handling
- * - convert averaged raw ADC data into mechanical angle
- * - apply sensor-direction mapping
- * - publish one averaged mechanical angle sample after a fixed raw-sample decimation
+ * - start raw ADC conversions at a fixed period
+ * - take completed raw ADC samples from the ADC IRQ path
+ * - average a fixed raw-sample count
+ * - convert the averaged raw data into mechanical angle
+ * - apply sensor direction
+ * - publish and consume mechanical angle samples
  *
  * @note Mechanical angle uses full-turn uint16 units
  *       (0..65535 <=> 0..1 mechanical revolution).
@@ -42,7 +43,7 @@ typedef enum {
 typedef struct {
 	adc_handle_t *adc_h;
 	uint16_t adc_full_scale;
-	uint32_t raw_sample_period_us;      /* SysTick-driven raw ADC conversion start interval. */
+	uint32_t raw_sample_period_us;      /* Time between raw ADC start requests from SysTick. */
 	uint16_t raw_samples_per_publish;   /* Publish one averaged angle after this many raw samples. */
 	as5600_analog_direction_t mechanical_angle_direction;
 } as5600_analog_cfg_t;
@@ -53,14 +54,12 @@ typedef struct {
  */
 typedef struct {
 	const as5600_analog_cfg_t *cfg;
-	volatile uint32_t raw_accumulator;  /* Sum of raw ADC codes within the active publish window. */
-	volatile uint16_t raw_sample_count; /* Number of raw ADC codes accumulated in the active publish window. */
-	volatile uint16_t last_raw_averaged;/* Most recent integer raw ADC average kept for diagnostics. */
+	volatile uint32_t raw_accumulator;  /* Sum of raw ADC codes in the current publish window. */
+	volatile uint16_t raw_sample_count; /* Number of raw ADC codes in the current publish window. */
 	volatile uint16_t mechanical_angle_u16;
-	uint32_t published_sample_period_us;/* published_dt = raw_sample_period_us * raw_samples_per_publish. */
 	uint64_t next_raw_sample_time_us;
 	volatile bool raw_conversion_pending;
-	volatile bool has_new_angle_sample; /* True after ADC completion publishes one new averaged angle. */
+	volatile bool has_new_angle_sample; /* True when one published angle sample is ready for the main loop. */
 	bool is_initialized;
 } as5600_analog_handle_t;
 
@@ -77,6 +76,9 @@ bool as5600_analog_init(as5600_analog_handle_t *as5600_analog_h,
 /**
  * @brief Service SysTick-based raw ADC conversion scheduling.
  *
+ * This function only checks when the next raw conversion should start.
+ * The ADC IRQ path still handles completed conversions.
+ *
  * @param as5600_analog_h Pointer to AS5600 analog handle.
  * @param now_us Current time in microseconds.
  * @return true if scheduling state is valid, false otherwise.
@@ -87,20 +89,21 @@ bool as5600_analog_service(as5600_analog_handle_t *as5600_analog_h,
 /**
  * @brief Consume one published averaged angle sample.
  *
+ * This function returns the latest published sample once and then clears
+ * the ready flag.
+ *
  * @param as5600_analog_h Pointer to AS5600 analog handle.
  * @param mechanical_angle_u16 Pointer to the published mechanical angle output.
- * @param raw_averaged Pointer to the published averaged raw ADC code output, optional.
  * @return true if one new published sample was consumed, false otherwise.
  */
 bool as5600_analog_consume_published_sample(as5600_analog_handle_t *as5600_analog_h,
-											uint16_t *mechanical_angle_u16,
-											uint16_t *raw_averaged);
+											uint16_t *mechanical_angle_u16);
 
 /**
  * @brief Consume one completed ADC sample for the active AS5600 analog handle.
  *
- * Call from the ADC completion IRQ path after adc_irq_handler() updates the ADC
- * driver handle state.
+ * Call this from the ADC IRQ path after adc_irq_handler() updates the ADC
+ * driver state.
  */
 void as5600_analog_adc_irq_handler(void);
 
