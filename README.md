@@ -5,17 +5,17 @@ Goal: educational reference implementation (not production-ready).
 
 ## Status
 - Phase 0: project skeleton ✅
-- Phase 1: Interfacing with BLDC Motor and encoder (AS5600 implemented) + basic speed loop (in progress)
-- Phase 2: commutation / FOC (planned)
+- Phase 1: Interfacing with BLDC Motor and encoder (AS5600 implemented) + basic speed loop ✅
+- Phase 2: commutation / FOC (in progress)
 
 ## Features (planned / in progress)
 
 - [X] SysTick as a system clock (SysTick)
 - [ ] Speed measurement (AS5600 analog output via ADC)
 - [X] Logging system (USART)
-- [ ] PWM generation + open-loop commutation test (timer)
+- [X] PWM generation + open-loop commutation test (timer)
 - [ ] FOC (no current control in this version) + PI speed controller
-- [ ] Simple user interface (UART CLI)
+- [ ] Simple user interface (USART CLI)
 - [ ] Fault handling
 
 ## Known Limitations
