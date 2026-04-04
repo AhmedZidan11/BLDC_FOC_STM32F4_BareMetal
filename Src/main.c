@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include "config/app_motor_test_config.h"
 #include "config/project_config.h"
 #include "drivers/as5600_analog.h"
 #include "board/board.h"
@@ -27,9 +28,29 @@
 #include "motor/motor.h"
 #include "motor/motor_3pwm.h"
 #include "motor/motor_openloop.h"
-#include "motor/motor_speed_estimator.h"
+#include "motor/motor_speed_reference_estimator.h"
 
 extern usart2_handle_t USART2_H;
+
+typedef struct {
+	uint32_t phase_increment_ramp_step_u32;
+} app_motor_test_derived_cfg_t;
+
+typedef struct app_context_t {
+	motor_handle_t motor_h;
+	motor_3pwm_handle_t motor_3pwm_h;
+	motor_openloop_handle_t motor_openloop_h;
+	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
+	as5600_analog_handle_t as5600_analog_h;
+	uint32_t last_angle_log_ms;
+	uint32_t last_openloop_update_ms;
+	uint32_t alignment_start_ms;
+	uint64_t latest_logged_timestamp_us;
+	int32_t latest_logged_speed_mrpm;
+	uint16_t latest_logged_angle_u16;
+	bool latest_sample_valid;
+	bool alignment_done;
+} app_context_t;
 
 int __io_putchar(int ch)
 {
@@ -39,56 +60,82 @@ int __io_putchar(int ch)
     return (w == 1u) ? ch : EOF;
 }
 
-int main(void)
+/**
+ * @brief Trap on one fatal application error before runtime drive is active.
+ *
+ * @param tag Log tag.
+ * @param msg Log message.
+ */
+static void app_fatal_trap(const char *tag, const char *msg)
 {
-	const uint16_t motor_test_pole_pairs = 7u;
-	const int32_t motor_test_target_mechanical_speed_mrpm = 60000;
-	const int8_t motor_test_sensor_direction = -1;
-	const uint16_t motor_test_alignment_amplitude_permyriad = 1500u;
-	const uint16_t motor_test_run_amplitude_permyriad = 2000u;
-	const uint16_t motor_test_max_amplitude_permyriad = 10000u;
-	const uint16_t motor_test_update_period_ms = 1u;
-	const uint16_t motor_test_ramp_duration_ms = 300u;
-	const uint16_t motor_test_alignment_duration_ms = 400u;
-	const uint16_t motor_test_alignment_electrical_angle_u16 = 0u;
-	const uint16_t motor_test_angle_adc_sample_period_us = 100u;
-	const uint16_t motor_test_angle_average_period_us = 1000u;
-	const uint16_t motor_test_angle_publish_raw_sample_count =
-			(uint16_t)(motor_test_angle_average_period_us / motor_test_angle_adc_sample_period_us);
-	const uint32_t motor_test_angle_publish_period_us =
-			(uint32_t)motor_test_angle_adc_sample_period_us *
-			(uint32_t)motor_test_angle_publish_raw_sample_count;
-	const uint16_t motor_test_speed_estimator_history_sample_count = 4u;
-	const uint16_t motor_test_status_print_period_ms = 1000u;
+	LOGE(tag, msg);
+	while(1) {}
+}
+
+/**
+ * @brief Stop the powered test path and trap on one fatal runtime error.
+ *
+ * @param app Pointer to application runtime context.
+ * @param tag Log tag.
+ * @param msg Log message.
+ */
+static void app_fatal_stop(app_context_t *app, const char *tag, const char *msg)
+{
+	/* Disable the power stage before trapping on a runtime fault. */
+	gpio_write(MOTOR_EN.pin, false);
+	app->motor_h.status.is_enabled = false;
+	(void)motor_3pwm_stop(&app->motor_3pwm_h);
+	LOGE(tag, msg);
+	while(1) {}
+}
+
+/**
+ * @brief Build the derived open-loop ramp configuration for the current test.
+ *
+ * @return Derived motor test values used by the open-loop helper.
+ */
+static app_motor_test_derived_cfg_t app_build_motor_test_derived_cfg(void)
+{
 	const uint64_t motor_test_mrpm_per_rpm = 1000ULL;
-	const uint32_t as5600_adc_full_scale = 4095u;
 	const uint32_t motor_test_ramp_update_count =
-			(uint32_t)((motor_test_ramp_duration_ms + motor_test_update_period_ms - 1u) /
-					  motor_test_update_period_ms);
+			(uint32_t)((APP_MOTOR_TEST_RAMP_DURATION_MS + APP_MOTOR_TEST_UPDATE_PERIOD_MS - 1u) /
+					  APP_MOTOR_TEST_UPDATE_PERIOD_MS);
 	const uint64_t motor_test_target_phase_increment_num =
-			(uint64_t)motor_test_target_mechanical_speed_mrpm *
-			(uint64_t)motor_test_pole_pairs *
-			(uint64_t)motor_test_update_period_ms *
+			(uint64_t)APP_MOTOR_TEST_TARGET_MECHANICAL_SPEED_MRPM *
+			(uint64_t)APP_MOTOR_TEST_POLE_PAIRS *
+			(uint64_t)APP_MOTOR_TEST_UPDATE_PERIOD_MS *
 			MOTOR_OPENLOOP_PHASE_ACCUM_FULL_TURN_U32;
 	const uint32_t motor_test_target_phase_increment_u32 =
 			(uint32_t)((motor_test_target_phase_increment_num +
 					   ((MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm) / 2u)) /
 					  (MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm));
-	/* Reach the target phase increment in roughly motor_test_ramp_duration_ms. */
-	const uint32_t motor_test_phase_increment_ramp_step_u32 =
+	app_motor_test_derived_cfg_t derived_cfg = {0};
+
+	/* Reach the target phase increment in roughly APP_MOTOR_TEST_RAMP_DURATION_MS. */
+	derived_cfg.phase_increment_ramp_step_u32 =
 			(uint32_t)((motor_test_target_phase_increment_u32 + motor_test_ramp_update_count - 1u) /
 					  motor_test_ramp_update_count);
 
+	return derived_cfg;
+}
+
+/**
+ * @brief Build the shared motor runtime state for the current test.
+ *
+ * @return Initialized shared motor runtime container.
+ */
+static motor_handle_t app_build_motor_handle(void)
+{
 	motor_handle_t motor_h = {
 			.measurements = {0},
 			.targets = {
-					.target_mechanical_speed_mrpm = motor_test_target_mechanical_speed_mrpm,
-					.target_amplitude_permyriad = motor_test_alignment_amplitude_permyriad,
+					.target_mechanical_speed_mrpm = APP_MOTOR_TEST_TARGET_MECHANICAL_SPEED_MRPM,
+					.target_amplitude_permyriad = APP_MOTOR_TEST_ALIGNMENT_AMPLITUDE_PERMYRIAD,
 			},
 			.limits = {
-					.pole_pairs = motor_test_pole_pairs,
+					.pole_pairs = APP_MOTOR_TEST_POLE_PAIRS,
 					.max_target_mechanical_speed_mrpm = 0,
-					.max_amplitude_permyriad = motor_test_max_amplitude_permyriad,
+					.max_amplitude_permyriad = APP_MOTOR_TEST_MAX_AMPLITUDE_PERMYRIAD,
 			},
 			.status = {
 					.mode = MOTOR_MODE_INACTIVE,
@@ -99,93 +146,227 @@ int main(void)
 					.has_valid_mechanical_speed = false,
 			},
 			.openloop = {0},
-			.speed_estimator = {
-					.mechanical_angle_history_u16 = {0},
-					.history_write_index = 0u,
-					.history_valid_count = 0u,
-			},
 	};
+
+	return motor_h;
+}
+
+/**
+ * @brief Initialize the application runtime context.
+ *
+ * @param app Pointer to application runtime context.
+ */
+static void app_init_context(app_context_t *app)
+{
+	app->motor_h = app_build_motor_handle();
+	app->motor_3pwm_h = (motor_3pwm_handle_t){0};
+	app->motor_openloop_h = (motor_openloop_handle_t){0};
+	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
+	app->as5600_analog_h = (as5600_analog_handle_t){0};
+	app->last_angle_log_ms = 0u;
+	app->last_openloop_update_ms = 0u;
+	app->alignment_start_ms = 0u;
+	app->latest_logged_timestamp_us = 0u;
+	app->latest_logged_speed_mrpm = 0;
+	app->latest_logged_angle_u16 = 0u;
+	app->latest_sample_valid = false;
+	app->alignment_done = false;
+}
+
+/**
+ * @brief Initialize the application modules for the powered test.
+ *
+ * @param app Pointer to application runtime context.
+ * @param motor_3pwm_cfg Pointer to motor 3PWM configuration.
+ * @param motor_openloop_cfg Pointer to motor open-loop configuration.
+ * @param motor_speed_reference_estimator_cfg Pointer to reference-estimator configuration.
+ * @param as5600_analog_cfg Pointer to AS5600 analog configuration.
+ */
+static void app_init_modules(app_context_t *app,
+							 const motor_3pwm_cfg_t *motor_3pwm_cfg,
+							 const motor_openloop_cfg_t *motor_openloop_cfg,
+							 const motor_speed_reference_estimator_cfg_t *motor_speed_reference_estimator_cfg,
+							 const as5600_analog_cfg_t *as5600_analog_cfg)
+{
+	/* Initialize the board drivers before the application modules. */
+	board_init();
+	log_init(&USART2_H);
+
+	/* Initialize the PWM power stage used by the open-loop path. */
+	if (!motor_3pwm_init(&app->motor_3pwm_h, motor_3pwm_cfg))
+	{
+		app_fatal_trap("M3PWM", "init failed");
+	}
+
+	/* Initialize the open-loop helper for the active motor test. */
+	if (!motor_openloop_init(&app->motor_openloop_h, motor_openloop_cfg))
+	{
+		app_fatal_trap("MOPEN", "init failed");
+	}
+
+	/* Initialize the reference speed-estimator baseline. */
+	if (!motor_speed_reference_estimator_init(&app->motor_speed_reference_estimator_h,
+											  motor_speed_reference_estimator_cfg))
+	{
+		app_fatal_trap("MEST", "init failed");
+	}
+
+	/* Initialize the AS5600 analog acquisition helper. */
+	if (!as5600_analog_init(&app->as5600_analog_h, as5600_analog_cfg))
+	{
+		app_fatal_trap("AS5600", "init failed");
+	}
+}
+
+/**
+ * @brief Start the powered open-loop motor test from the alignment vector.
+ *
+ * @param app Pointer to application runtime context.
+ * @param alignment_electrical_angle_u16 Startup electrical angle.
+ */
+static void app_start_motor_test(app_context_t *app, uint16_t alignment_electrical_angle_u16)
+{
+	/* Preload the startup alignment vector before PWM output starts. */
+	if (!motor_openloop_apply(&app->motor_openloop_h, alignment_electrical_angle_u16))
+	{
+		app_fatal_trap("MOPEN", "alignment apply failed");
+	}
+
+	/* Start the PWM output before enabling the power stage. */
+	if (!motor_3pwm_start(&app->motor_3pwm_h))
+	{
+		app_fatal_trap("M3PWM", "start failed");
+	}
+
+	/* Enable the motor power stage and seed the application timing markers. */
+	gpio_write(MOTOR_EN.pin, true);
+	app->motor_h.status.is_enabled = true;
+	app->alignment_start_ms = SYSTICK_GetTimeMs();
+	app->last_angle_log_ms = app->alignment_start_ms;
+	app->last_openloop_update_ms = app->alignment_start_ms;
+}
+
+/**
+ * @brief Update the application state from one consumed AS5600 angle sample.
+ *
+ * @param app Pointer to application runtime context.
+ * @param mechanical_angle_u16 Published mechanical angle sample.
+ * @param sample_timestamp_us Current sample-consume timestamp.
+ */
+static void app_handle_consumed_angle_sample(app_context_t *app,
+											 uint16_t mechanical_angle_u16,
+											 uint64_t sample_timestamp_us)
+{
+	/* Publish the latest sensor angle into the shared motor state. */
+	app->motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
+	app->motor_h.status.has_valid_mechanical_angle = true;
+
+	/* Feed the reference estimator with the current sample-consume timestamp. */
+	if (!motor_speed_reference_estimator_update(&app->motor_speed_reference_estimator_h,
+												mechanical_angle_u16,
+												sample_timestamp_us))
+	{
+		app_fatal_stop(app, "MEST", "update failed");
+	}
+
+	/* Keep the latest consumed sample for the reduced-rate UART log stream. */
+	app->latest_logged_timestamp_us = sample_timestamp_us;
+	app->latest_logged_angle_u16 = mechanical_angle_u16;
+	app->latest_logged_speed_mrpm = app->motor_h.measurements.measured_mechanical_speed_mrpm;
+	app->latest_sample_valid = true;
+}
+
+/**
+ * @brief Advance the alignment hold and the active open-loop drive path.
+ *
+ * @param app Pointer to application runtime context.
+ * @param motor_openloop_cfg Pointer to motor open-loop configuration.
+ * @param now_ms Current time in milliseconds.
+ */
+static void app_update_openloop_drive(app_context_t *app,
+									  const motor_openloop_cfg_t *motor_openloop_cfg,
+									  uint32_t now_ms)
+{
+	/* Hold the alignment vector before phase progression starts. */
+	if (app->alignment_done == false)
+	{
+		if ((now_ms - app->alignment_start_ms) >= APP_MOTOR_TEST_ALIGNMENT_DURATION_MS)
+		{
+			app->motor_h.targets.target_amplitude_permyriad = APP_MOTOR_TEST_RUN_AMPLITUDE_PERMYRIAD;
+			app->alignment_done = true;
+			app->last_openloop_update_ms = now_ms;
+		}
+
+		return;
+	}
+
+	/* Advance the active powered open-loop command path at the configured period. */
+	if ((now_ms - app->last_openloop_update_ms) >= motor_openloop_cfg->update_period_ms)
+	{
+		if (!motor_openloop_update(&app->motor_openloop_h))
+		{
+			app_fatal_stop(app, "MOPEN", "update failed");
+		}
+
+		app->last_openloop_update_ms += motor_openloop_cfg->update_period_ms;
+	}
+}
+
+/**
+ * @brief Emit one reduced-rate UART log line from the latest consumed sample.
+ *
+ * @param app Pointer to application runtime context.
+ * @param now_ms Current time in milliseconds.
+ */
+static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
+{
+	/* Print the latest consumed sample at the configured lower UART rate. */
+	if (((now_ms - app->last_angle_log_ms) >= APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS) &&
+		(app->latest_sample_valid == true))
+	{
+		printf("T,%lu,%u,%ld\r\n",
+			   (unsigned long)app->latest_logged_timestamp_us,
+			   (unsigned)app->latest_logged_angle_u16,
+			   (long)app->latest_logged_speed_mrpm);
+		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
+	}
+}
+
+int main(void)
+{
+	const app_motor_test_derived_cfg_t derived_cfg = app_build_motor_test_derived_cfg();
+	app_context_t app = {0};
 	const motor_3pwm_cfg_t motor_3pwm_cfg = {
 			.pwm_h = &PWM_H,
 	};
-	motor_3pwm_handle_t motor_3pwm_h = {0};
 	const motor_openloop_cfg_t motor_openloop_cfg = {
-			.motor_h = &motor_h,
-			.motor_3pwm_h = &motor_3pwm_h,
-			.update_period_ms = motor_test_update_period_ms,
-			.phase_increment_ramp_step_u32 = motor_test_phase_increment_ramp_step_u32,
+			.motor_h = &app.motor_h,
+			.motor_3pwm_h = &app.motor_3pwm_h,
+			.update_period_ms = APP_MOTOR_TEST_UPDATE_PERIOD_MS,
+			.phase_increment_ramp_step_u32 = derived_cfg.phase_increment_ramp_step_u32,
 	};
-	motor_openloop_handle_t motor_openloop_h = {0};
-	const motor_speed_estimator_cfg_t motor_speed_estimator_cfg = {
-			.motor_h = &motor_h,
-			.sample_period_us = motor_test_angle_publish_period_us,
-			.history_sample_count = motor_test_speed_estimator_history_sample_count,
+	const motor_speed_reference_estimator_cfg_t motor_speed_reference_estimator_cfg = {
+			.motor_h = &app.motor_h,
+			.history_sample_count = APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT,
 	};
-	motor_speed_estimator_handle_t motor_speed_estimator_h = {0};
 	const as5600_analog_cfg_t as5600_analog_cfg = {
 			.adc_h = &ADC1_IN0_H,
-			.adc_full_scale = (uint16_t)as5600_adc_full_scale,
-			.raw_sample_period_us = motor_test_angle_adc_sample_period_us,
-			.raw_samples_per_publish = motor_test_angle_publish_raw_sample_count,
-			.mechanical_angle_direction = (motor_test_sensor_direction < 0) ?
+			.adc_full_scale = (uint16_t)APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE,
+			.raw_sample_period_us = APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US,
+			.raw_samples_per_publish = APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT,
+			.mechanical_angle_direction = (APP_MOTOR_TEST_SENSOR_DIRECTION < 0) ?
 					AS5600_ANALOG_DIRECTION_REVERSE :
 					AS5600_ANALOG_DIRECTION_FORWARD,
 	};
-	as5600_analog_handle_t as5600_analog_h = {0};
-	uint32_t last_log_ms = 0u;
-	uint32_t last_openloop_update_ms = 0u;
-	uint32_t last_status_print_ms = 0u;
-	uint32_t alignment_start_ms = 0u;
 	uint16_t mechanical_angle_u16 = 0u;
-	bool alignment_done = false;
 
-	board_init(); // drivers initialization
-	log_init(&USART2_H);
-	LOGI("APP", "boot");
-	LOGI("MOPEN", "first powered open-loop spin test active");
-
-	if (!motor_3pwm_init(&motor_3pwm_h, &motor_3pwm_cfg))
-	{
-		LOGE("M3PWM", "init failed");
-		while(1) {}
-	}
-
-	if (!motor_openloop_init(&motor_openloop_h, &motor_openloop_cfg))
-	{
-		LOGE("MOPEN", "init failed");
-		while(1) {}
-	}
-
-	if (!motor_speed_estimator_init(&motor_speed_estimator_h, &motor_speed_estimator_cfg))
-	{
-		LOGE("MEST", "init failed");
-		while(1) {}
-	}
-
-	/* Initialize AS5600 analog acquisition for the powered test. */
-	if (!as5600_analog_init(&as5600_analog_h, &as5600_analog_cfg))
-	{
-		LOGE("AS5600", "init failed");
-		while(1) {}
-	}
-
-	if (!motor_openloop_apply(&motor_openloop_h, motor_test_alignment_electrical_angle_u16))
-	{
-		LOGE("MOPEN", "alignment apply failed");
-		while(1) {}
-	}
-
-	if (!motor_3pwm_start(&motor_3pwm_h))
-	{
-		LOGE("M3PWM", "start failed");
-		while(1) {}
-	}
-
-	gpio_write(MOTOR_EN.pin, true);
-	motor_h.status.is_enabled = true;
-	alignment_start_ms = SYSTICK_GetTimeMs();
-	last_openloop_update_ms = alignment_start_ms;
-	last_status_print_ms = alignment_start_ms;
+	app_init_context(&app);
+	app_init_modules(&app,
+					 &motor_3pwm_cfg,
+					 &motor_openloop_cfg,
+					 &motor_speed_reference_estimator_cfg,
+					 &as5600_analog_cfg);
+	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16);
 
 	/* Loop forever */
 	while(1)
@@ -194,130 +375,21 @@ int main(void)
 		uint64_t now_us = SYSTICK_GetTimeUs();
 
 		/* Service SysTick-driven AS5600 raw-sample scheduling. */
-		if (!as5600_analog_service(&as5600_analog_h, now_us))
+		if (!as5600_analog_service(&app.as5600_analog_h, now_us))
 		{
-			gpio_write(MOTOR_EN.pin, false);
-			motor_h.status.is_enabled = false;
-			(void)motor_3pwm_stop(&motor_3pwm_h);
-			LOGE("AS5600", "update failed");
-			while(1) {}
+			app_fatal_stop(&app, "AS5600", "update failed");
 		}
 
 		/* Consume one fixed-period published AS5600 mechanical-angle sample. */
-		if (as5600_analog_consume_published_sample(&as5600_analog_h, &mechanical_angle_u16, NULL))
+		if (as5600_analog_consume_published_sample(&app.as5600_analog_h, &mechanical_angle_u16))
 		{
-			/* Publish the latest averaged sensor angle into the shared motor state. */
-			motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
-			motor_h.status.has_valid_mechanical_angle = true;
-			/* Feed the estimator with one fixed-period published angle sample. */
-			if (!motor_speed_estimator_update(&motor_speed_estimator_h, mechanical_angle_u16))
-			{
-				gpio_write(MOTOR_EN.pin, false);
-				motor_h.status.is_enabled = false;
-				(void)motor_3pwm_stop(&motor_3pwm_h);
-				LOGE("MEST", "update failed");
-				while(1) {}
-			}
+			app_handle_consumed_angle_sample(&app, mechanical_angle_u16, now_us);
 		}
 
-		/* Hold the initial alignment vector before enabling phase progression. */
-		if (alignment_done == false)
-		{
-			if ((now_ms - alignment_start_ms) >= motor_test_alignment_duration_ms)
-			{
-				motor_h.targets.target_amplitude_permyriad = motor_test_run_amplitude_permyriad;
-				alignment_done = true;
-				last_openloop_update_ms = now_ms;
-			}
-		}
-		/* Advance the active powered open-loop command path. */
-		else if ((now_ms - last_openloop_update_ms) >= motor_openloop_cfg.update_period_ms)
-		{
-			if (!motor_openloop_update(&motor_openloop_h))
-			{
-				gpio_write(MOTOR_EN.pin, false);
-				motor_h.status.is_enabled = false;
-				(void)motor_3pwm_stop(&motor_3pwm_h);
-				LOGE("MOPEN", "update failed");
-				while(1) {}
-			}
+		/* Advance the active powered open-loop motor test path. */
+		app_update_openloop_drive(&app, &motor_openloop_cfg, now_ms);
 
-			last_openloop_update_ms += motor_openloop_cfg.update_period_ms;
-		}
-
-		/* Print the exact estimator window used by the latest speed calculation. */
-		if ((now_ms - last_status_print_ms) >= motor_test_status_print_period_ms)
-		{
-			int32_t target_mrpm = motor_h.targets.target_mechanical_speed_mrpm;
-			int32_t est_mrpm_inst = motor_h.measurements.measured_mechanical_speed_mrpm;
-			const char *est_inst_sign = (est_mrpm_inst < 0) ? "-" : "";
-			int32_t est_mrpm_inst_abs = (est_mrpm_inst < 0) ? -est_mrpm_inst : est_mrpm_inst;
-			uint16_t a0 = 0u;
-			uint16_t a1 = 0u;
-			uint16_t a2 = 0u;
-			uint16_t a3 = 0u;
-			uint16_t a4 = 0u;
-			unsigned long elapsed_time_us = 0u;
-			unsigned long dt01_us = 0u;
-			unsigned long dt12_us = 0u;
-			unsigned long dt23_us = 0u;
-			unsigned long dt34_us = 0u;
-			const char *steady_str =
-					((alignment_done == true) &&
-					 (motor_h.openloop.current_phase_increment_u32 == motor_h.openloop.target_phase_increment_u32))
-					? "yes" : "no";
-
-			/* Extract the stored oldest-to-newest estimator window endpoints for logging. */
-			if (motor_h.speed_estimator.last_window_point_count >= 5u)
-			{
-				a0 = motor_h.speed_estimator.last_window_angle_u16[0];
-				a1 = motor_h.speed_estimator.last_window_angle_u16[1];
-				a2 = motor_h.speed_estimator.last_window_angle_u16[2];
-				a3 = motor_h.speed_estimator.last_window_angle_u16[3];
-				a4 = motor_h.speed_estimator.last_window_angle_u16[4];
-
-				/* Each retained sliding-window interval equals the configured fixed publish period. */
-				dt01_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
-				dt12_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
-				dt23_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
-				dt34_us = (unsigned long)motor_speed_estimator_cfg.sample_period_us;
-			}
-
-			/* Cast the total estimator window duration into a 32-bit debug-print value. */
-			elapsed_time_us = (unsigned long)motor_h.speed_estimator.last_elapsed_time_us;
-
-			printf("OL target_rpm=%ld.%03ld est_rpm_inst=%s%ld.%03ld delta_angle_counts=%ld elapsed_time_us=%lu steady=%s\r\n",
-				   (long)(target_mrpm / 1000),
-				   (long)(target_mrpm % 1000),
-				   est_inst_sign,
-				   (long)(est_mrpm_inst_abs / 1000),
-				   (long)(est_mrpm_inst_abs % 1000),
-				   (long)motor_h.speed_estimator.last_mechanical_angle_delta_counts,
-				   elapsed_time_us,
-				   steady_str);
-			printf("OL win a0=%u a1=%u a2=%u a3=%u a4=%u dt01=%lu dt12=%lu dt23=%lu dt34=%lu\r\n",
-				   (unsigned)a0,
-				   (unsigned)a1,
-				   (unsigned)a2,
-				   (unsigned)a3,
-				   (unsigned)a4,
-				   dt01_us,
-				   dt12_us,
-				   dt23_us,
-				   dt34_us);
-
-			last_status_print_ms += motor_test_status_print_period_ms;
-		}
-
-		if ((now_ms - last_log_ms) >= 1000u)
-		{
-			last_log_ms = now_ms;
-
-			/* HB: periodic heartbeat log */
-			LOGI_F("HB", "tx_drop=%u rx_drop=%u ore=%lu",
-				   (unsigned)USART2_H.tx_buffer->drop_cnt,
-				   (unsigned)USART2_H.rx_buffer->drop_cnt,
-				   (unsigned long)USART2_H.err_ore_cnt);
-		}
+		/* Emit the reduced-rate UART log line. */
+		app_emit_angle_log(&app, now_ms);
 	}
 }
