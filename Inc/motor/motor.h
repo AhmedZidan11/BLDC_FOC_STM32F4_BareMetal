@@ -43,7 +43,7 @@ typedef enum {
  */
 typedef struct {
 	uint16_t mechanical_angle_u16;
-	uint16_t electrical_angle_u16;
+	uint16_t electrical_angle_u16; /* Measured electrical angle for future sensored control. */
 	int32_t measured_mechanical_speed_mrpm;
 } motor_measurements_t;
 
@@ -87,7 +87,7 @@ typedef struct {
 	uint32_t phase_accumulator_u32;
 	uint32_t current_phase_increment_u32;
 	uint32_t target_phase_increment_u32;
-	uint16_t last_electrical_angle_u16;
+	uint16_t last_electrical_angle_u16; /* Last commanded electrical angle applied by open-loop drive. */
 } motor_openloop_state_t;
 
 /**

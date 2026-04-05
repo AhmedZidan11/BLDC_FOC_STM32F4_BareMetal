@@ -27,6 +27,7 @@
 #include "drivers/log.h"
 #include "motor/motor.h"
 #include "motor/motor_3pwm.h"
+#include "motor/motor_electrical_angle.h"
 #include "motor/motor_openloop.h"
 #include "motor/motor_speed_reference_estimator.h"
 
@@ -40,6 +41,7 @@ typedef struct app_context_t {
 	motor_handle_t motor_h;
 	motor_3pwm_handle_t motor_3pwm_h;
 	motor_openloop_handle_t motor_openloop_h;
+	motor_electrical_angle_handle_t motor_electrical_angle_h;
 	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
 	as5600_analog_handle_t as5600_analog_h;
 	uint32_t last_angle_log_ms;
@@ -161,6 +163,7 @@ static void app_init_context(app_context_t *app)
 	app->motor_h = app_build_motor_handle();
 	app->motor_3pwm_h = (motor_3pwm_handle_t){0};
 	app->motor_openloop_h = (motor_openloop_handle_t){0};
+	app->motor_electrical_angle_h = (motor_electrical_angle_handle_t){0};
 	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
 	app->as5600_analog_h = (as5600_analog_handle_t){0};
 	app->last_angle_log_ms = 0u;
@@ -179,12 +182,14 @@ static void app_init_context(app_context_t *app)
  * @param app Pointer to application runtime context.
  * @param motor_3pwm_cfg Pointer to motor 3PWM configuration.
  * @param motor_openloop_cfg Pointer to motor open-loop configuration.
+ * @param motor_electrical_angle_cfg Pointer to electrical-angle configuration.
  * @param motor_speed_reference_estimator_cfg Pointer to reference-estimator configuration.
  * @param as5600_analog_cfg Pointer to AS5600 analog configuration.
  */
 static void app_init_modules(app_context_t *app,
 							 const motor_3pwm_cfg_t *motor_3pwm_cfg,
 							 const motor_openloop_cfg_t *motor_openloop_cfg,
+							 const motor_electrical_angle_cfg_t *motor_electrical_angle_cfg,
 							 const motor_speed_reference_estimator_cfg_t *motor_speed_reference_estimator_cfg,
 							 const as5600_analog_cfg_t *as5600_analog_cfg)
 {
@@ -202,6 +207,12 @@ static void app_init_modules(app_context_t *app,
 	if (!motor_openloop_init(&app->motor_openloop_h, motor_openloop_cfg))
 	{
 		app_fatal_trap("MOPEN", "init failed");
+	}
+
+	/* Initialize the measured electrical-angle helper for future sensored paths. */
+	if (!motor_electrical_angle_init(&app->motor_electrical_angle_h, motor_electrical_angle_cfg))
+	{
+		app_fatal_trap("MEANG", "init failed");
 	}
 
 	/* Initialize the reference speed-estimator baseline. */
@@ -260,6 +271,12 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
 	/* Publish the latest sensor angle into the shared motor state. */
 	app->motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
 	app->motor_h.status.has_valid_mechanical_angle = true;
+
+	/* Convert the measured mechanical angle into measured electrical angle. */
+	if (!motor_electrical_angle_update(&app->motor_electrical_angle_h, mechanical_angle_u16))
+	{
+		app_fatal_stop(app, "MEANG", "update failed");
+	}
 
 	/* Feed the reference estimator with the current sample-consume timestamp. */
 	if (!motor_speed_reference_estimator_update(&app->motor_speed_reference_estimator_h,
@@ -345,6 +362,10 @@ int main(void)
 			.update_period_ms = APP_MOTOR_TEST_UPDATE_PERIOD_MS,
 			.phase_increment_ramp_step_u32 = derived_cfg.phase_increment_ramp_step_u32,
 	};
+	const motor_electrical_angle_cfg_t motor_electrical_angle_cfg = {
+			.motor_h = &app.motor_h,
+			.electrical_offset_u16 = 0u,
+	};
 	const motor_speed_reference_estimator_cfg_t motor_speed_reference_estimator_cfg = {
 			.motor_h = &app.motor_h,
 			.history_sample_count = APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT,
@@ -364,6 +385,7 @@ int main(void)
 	app_init_modules(&app,
 					 &motor_3pwm_cfg,
 					 &motor_openloop_cfg,
+					 &motor_electrical_angle_cfg,
 					 &motor_speed_reference_estimator_cfg,
 					 &as5600_analog_cfg);
 	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16);

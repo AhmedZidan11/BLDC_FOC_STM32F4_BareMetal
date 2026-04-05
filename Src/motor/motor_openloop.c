@@ -140,10 +140,8 @@ static bool motor_openloop_apply_electrical_angle(motor_openloop_handle_t *motor
 
 	if (!motor_3pwm_set_duty_abc(motor_openloop_h->motor_3pwm_h, duty_a, duty_b, duty_c)) return false;
 
-	/* Store the last applied electrical angle in shared motor state. */
+	/* Store only the last commanded electrical angle for the open-loop path. */
 	motor_h->openloop.last_electrical_angle_u16 = electrical_angle_u16;
-	motor_h->measurements.electrical_angle_u16 = electrical_angle_u16;
-	motor_h->status.has_valid_electrical_angle = true;
 	return true;
 }
 

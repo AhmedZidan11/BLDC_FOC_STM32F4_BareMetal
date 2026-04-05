@@ -13,6 +13,7 @@
  * - apply one static electrical vector
  * - advance ramped electrical phase progression
  * - update the 3-PWM output stage directly
+ * - keep the last commanded electrical angle for the open-loop path
  *
  * @note Electrical angle uses full-turn uint16 units.
  * @note Mechanical speed uses signed milli-rpm units.
