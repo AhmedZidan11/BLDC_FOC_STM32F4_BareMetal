@@ -36,6 +36,7 @@ extern usart2_handle_t USART2_H;
 
 typedef struct {
 	uint32_t phase_increment_ramp_step_u32;
+	uint16_t foc_uq_ramp_step_per_update;
 } app_motor_test_derived_cfg_t;
 
 typedef struct app_context_t {
@@ -49,6 +50,7 @@ typedef struct app_context_t {
 	uint32_t last_angle_log_ms;
 	uint32_t last_openloop_update_ms;
 	uint32_t alignment_start_ms;
+	uint16_t current_foc_uq_permyriad;
 	uint64_t latest_logged_timestamp_us;
 	int32_t latest_logged_speed_mrpm;
 	uint16_t latest_logged_mechanical_angle_u16;
@@ -113,12 +115,31 @@ static app_motor_test_derived_cfg_t app_build_motor_test_derived_cfg(void)
 			(uint32_t)((motor_test_target_phase_increment_num +
 					   ((MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm) / 2u)) /
 					  (MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm));
+	const uint32_t foc_uq_ramp_update_count =
+			(uint32_t)((APP_MOTOR_TEST_FOC_UQ_RAMP_DURATION_MS + APP_MOTOR_TEST_UPDATE_PERIOD_MS - 1u) /
+					  APP_MOTOR_TEST_UPDATE_PERIOD_MS);
 	app_motor_test_derived_cfg_t derived_cfg = {0};
 
 	/* Reach the target phase increment in roughly APP_MOTOR_TEST_RAMP_DURATION_MS. */
 	derived_cfg.phase_increment_ramp_step_u32 =
 			(uint32_t)((motor_test_target_phase_increment_u32 + motor_test_ramp_update_count - 1u) /
 					  motor_test_ramp_update_count);
+
+	/* Reach target Uq in roughly APP_MOTOR_TEST_FOC_UQ_RAMP_DURATION_MS at update cadence. */
+	if (APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD == 0u)
+	{
+		derived_cfg.foc_uq_ramp_step_per_update = 0u;
+	}
+	else if (APP_MOTOR_TEST_FOC_UQ_RAMP_DURATION_MS == 0u)
+	{
+		derived_cfg.foc_uq_ramp_step_per_update = APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD;
+	}
+	else
+	{
+		derived_cfg.foc_uq_ramp_step_per_update =
+				(uint16_t)((APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD + foc_uq_ramp_update_count - 1u) /
+						  foc_uq_ramp_update_count);
+	}
 
 	return derived_cfg;
 }
@@ -172,6 +193,7 @@ static void app_init_context(app_context_t *app)
 	app->last_angle_log_ms = 0u;
 	app->last_openloop_update_ms = 0u;
 	app->alignment_start_ms = 0u;
+	app->current_foc_uq_permyriad = 0u;
 	app->latest_logged_timestamp_us = 0u;
 	app->latest_logged_speed_mrpm = 0;
 	app->latest_logged_mechanical_angle_u16 = 0u;
@@ -322,10 +344,12 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
  *
  * @param app Pointer to application runtime context.
  * @param motor_openloop_cfg Pointer to motor open-loop configuration.
+ * @param foc_uq_ramp_step_per_update Uq increment applied on each runtime update step.
  * @param now_ms Current time in milliseconds.
  */
 static void app_update_runtime_actuation(app_context_t *app,
 										 const motor_openloop_cfg_t *motor_openloop_cfg,
+										 uint16_t foc_uq_ramp_step_per_update,
 										 uint32_t now_ms)
 {
 	uint16_t raw_electrical_angle_u16 = 0u;
@@ -372,6 +396,8 @@ static void app_update_runtime_actuation(app_context_t *app,
 				   (unsigned)raw_electrical_angle_u16,
 				   (unsigned)electrical_offset_u16);
 
+			/* Start q-only FOC runtime with zero Uq and ramp up in the run phase. */
+			app->current_foc_uq_permyriad = 0u;
 			app->motor_h.targets.target_amplitude_permyriad = APP_MOTOR_TEST_RUN_AMPLITUDE_PERMYRIAD;
 			app->alignment_done = true;
 			app->last_openloop_update_ms = now_ms;
@@ -384,9 +410,23 @@ static void app_update_runtime_actuation(app_context_t *app,
 	if ((now_ms - app->last_openloop_update_ms) >= motor_openloop_cfg->update_period_ms)
 	{
 		if (!motor_foc_voltage_apply_q_only(&app->motor_foc_voltage_h,
-											APP_MOTOR_TEST_FOC_UQ_PERMYRIAD))
+											app->current_foc_uq_permyriad))
 		{
 			app_fatal_stop(app, "MFOC", "apply failed");
+		}
+
+		/* Soft-start refinement: ramp Uq toward the configured target at update cadence. */
+		if (app->current_foc_uq_permyriad < APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD)
+		{
+			uint16_t uq_delta =
+					(uint16_t)(APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD - app->current_foc_uq_permyriad);
+			if (uq_delta > foc_uq_ramp_step_per_update)
+			{
+				uq_delta = foc_uq_ramp_step_per_update;
+			}
+
+			app->current_foc_uq_permyriad =
+					(uint16_t)(app->current_foc_uq_permyriad + uq_delta);
 		}
 
 		app->last_openloop_update_ms += motor_openloop_cfg->update_period_ms;
@@ -504,7 +544,10 @@ int main(void)
 		}
 
 		/* Advance alignment and post-alignment runtime actuation. */
-		app_update_runtime_actuation(&app, &motor_openloop_cfg, now_ms);
+		app_update_runtime_actuation(&app,
+									 &motor_openloop_cfg,
+									 derived_cfg.foc_uq_ramp_step_per_update,
+									 now_ms);
 
 		/* Emit the reduced-rate UART log line. */
 		app_emit_angle_log(&app, now_ms);
