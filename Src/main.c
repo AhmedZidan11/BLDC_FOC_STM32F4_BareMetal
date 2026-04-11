@@ -49,7 +49,7 @@ typedef struct app_context_t {
 	uint32_t alignment_start_ms;
 	uint64_t latest_logged_timestamp_us;
 	int32_t latest_logged_speed_mrpm;
-	uint16_t latest_logged_angle_u16;
+	uint16_t latest_logged_mechanical_angle_u16;
 	bool latest_sample_valid;
 	bool alignment_done;
 } app_context_t;
@@ -171,9 +171,22 @@ static void app_init_context(app_context_t *app)
 	app->alignment_start_ms = 0u;
 	app->latest_logged_timestamp_us = 0u;
 	app->latest_logged_speed_mrpm = 0;
-	app->latest_logged_angle_u16 = 0u;
+	app->latest_logged_mechanical_angle_u16 = 0u;
 	app->latest_sample_valid = false;
 	app->alignment_done = false;
+}
+
+/**
+ * @brief Convert one full-turn uint16 angle into degrees x10 for debug logs.
+ *
+ * @param angle_u16 Angle in full-turn uint16 units.
+ * @return Angle in tenths of degree.
+ */
+static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
+{
+	/* deg_x10 = angle_u16 * 3600 / 65536, rounded to nearest. */
+	uint32_t deg_x10_num = ((uint32_t)angle_u16 * 3600u) + 32768u;
+	return (uint16_t)(deg_x10_num / 65536u);
 }
 
 /**
@@ -288,7 +301,7 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
 
 	/* Keep the latest consumed sample for the reduced-rate UART log stream. */
 	app->latest_logged_timestamp_us = sample_timestamp_us;
-	app->latest_logged_angle_u16 = mechanical_angle_u16;
+	app->latest_logged_mechanical_angle_u16 = mechanical_angle_u16;
 	app->latest_logged_speed_mrpm = app->motor_h.measurements.measured_mechanical_speed_mrpm;
 	app->latest_sample_valid = true;
 }
@@ -320,7 +333,7 @@ static void app_update_openloop_drive(app_context_t *app,
 
 			/* Convert measured mechanical angle into raw electrical angle without offset. */
 			if (!motor_electrical_angle_compute_raw(&app->motor_electrical_angle_h,
-													app->latest_logged_angle_u16,
+													app->latest_logged_mechanical_angle_u16,
 													&raw_electrical_angle_u16))
 			{
 				app_fatal_stop(app, "MEANG", "raw angle failed");
@@ -336,7 +349,7 @@ static void app_update_openloop_drive(app_context_t *app,
 			}
 
 			/* Publish the calibrated measured electrical angle from the same alignment sample. */
-			if (!motor_electrical_angle_update(&app->motor_electrical_angle_h, app->latest_logged_angle_u16))
+			if (!motor_electrical_angle_update(&app->motor_electrical_angle_h, app->latest_logged_mechanical_angle_u16))
 			{
 				app_fatal_stop(app, "MEANG", "aligned update failed");
 			}
@@ -344,7 +357,7 @@ static void app_update_openloop_drive(app_context_t *app,
 			/* Emit one machine-friendly alignment capture record. */
 			printf("A,%lu,%u,%u,%u\r\n",
 				   (unsigned long)app->latest_logged_timestamp_us,
-				   (unsigned)app->latest_logged_angle_u16,
+				   (unsigned)app->latest_logged_mechanical_angle_u16,
 				   (unsigned)raw_electrical_angle_u16,
 				   (unsigned)electrical_offset_u16);
 
@@ -376,14 +389,39 @@ static void app_update_openloop_drive(app_context_t *app,
  */
 static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 {
+	uint16_t raw_electrical_angle_u16 = 0u;
+	uint16_t mechanical_angle_deg_x10 = 0u;
+	uint16_t raw_electrical_angle_deg_x10 = 0u;
+	uint16_t measured_electrical_angle_deg_x10 = 0u;
+	uint16_t electrical_offset_deg_x10 = 0u;
+
 	/* Print the latest consumed sample at the configured lower UART rate. */
 	if (((now_ms - app->last_angle_log_ms) >= APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS) &&
 		(app->latest_sample_valid == true))
 	{
-		printf("T,%lu,%u,%ld\r\n",
-			   (unsigned long)app->latest_logged_timestamp_us,
-			   (unsigned)app->latest_logged_angle_u16,
-			   (long)app->latest_logged_speed_mrpm);
+		/* Recompute raw electrical angle from the current measured mechanical angle. */
+		if (!motor_electrical_angle_compute_raw(&app->motor_electrical_angle_h,
+												app->motor_h.measurements.mechanical_angle_u16,
+												&raw_electrical_angle_u16))
+		{
+			app_fatal_stop(app, "MEANG", "raw debug failed");
+		}
+
+		/* Convert angle fields to tenths of degree for readable runtime diagnostics. */
+		mechanical_angle_deg_x10 =
+				app_angle_u16_to_deg_x10(app->motor_h.measurements.mechanical_angle_u16);
+		raw_electrical_angle_deg_x10 = app_angle_u16_to_deg_x10(raw_electrical_angle_u16);
+		measured_electrical_angle_deg_x10 =
+				app_angle_u16_to_deg_x10(app->motor_h.measurements.electrical_angle_u16);
+		electrical_offset_deg_x10 =
+				app_angle_u16_to_deg_x10(app->motor_electrical_angle_h.electrical_offset_u16);
+
+		printf("D,%u,%u,%u,%u,%u\r\n",
+			   (unsigned)mechanical_angle_deg_x10,
+			   (unsigned)raw_electrical_angle_deg_x10,
+			   (unsigned)measured_electrical_angle_deg_x10,
+			   (unsigned)electrical_offset_deg_x10,
+			   (unsigned)((app->alignment_done == true) ? 1u : 0u));
 		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
 	}
 }
@@ -427,7 +465,7 @@ int main(void)
 					 &motor_electrical_angle_cfg,
 					 &motor_speed_reference_estimator_cfg,
 					 &as5600_analog_cfg);
-	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELCTRICAL_ANGLE_U16);
+	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16);
 
 	/* Loop forever */
 	while(1)
