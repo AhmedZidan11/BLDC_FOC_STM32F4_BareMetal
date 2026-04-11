@@ -409,8 +409,9 @@ static void app_update_runtime_actuation(app_context_t *app,
 	/* After alignment, switch from open-loop ramp updates to q-only sensored voltage actuation. */
 	if ((now_ms - app->last_openloop_update_ms) >= motor_openloop_cfg->update_period_ms)
 	{
-		if (!motor_foc_voltage_apply_q_only(&app->motor_foc_voltage_h,
-											app->current_foc_uq_permyriad))
+		if (!motor_foc_voltage_apply_dq(&app->motor_foc_voltage_h,
+										0,
+										(int16_t)app->current_foc_uq_permyriad))
 		{
 			app_fatal_stop(app, "MFOC", "apply failed");
 		}

@@ -69,6 +69,24 @@ static int16_t motor_sine_3pwm_lut_get(uint16_t electrical_angle_u16)
 	return motor_sine_3pwm_lut[index];
 }
 
+int16_t motor_sine_3pwm_get_phase_q15(uint16_t electrical_angle_u16)
+{
+	return motor_sine_3pwm_lut_get(electrical_angle_u16);
+}
+
+/**
+ * @brief Clamp one signed command to the valid Q15-like range.
+ *
+ * @param phase_q15 Signed phase command.
+ * @return Clamped phase command in [-32767, 32767].
+ */
+static int16_t motor_sine_3pwm_clamp_q15(int32_t phase_q15)
+{
+	if (phase_q15 > MOTOR_SINE_3PWM_LUT_MAX) return MOTOR_SINE_3PWM_LUT_MAX;
+	if (phase_q15 < -MOTOR_SINE_3PWM_LUT_MAX) return (int16_t)(-MOTOR_SINE_3PWM_LUT_MAX);
+	return (int16_t)phase_q15;
+}
+
 /**
  * @brief Convert one signed sine phase sample into one centered duty.
  *
@@ -125,6 +143,32 @@ bool motor_sine_3pwm_apply(motor_3pwm_handle_t *motor_3pwm_h,
 			motor_sine_3pwm_lut_get(angle_b_u16), amplitude_permyriad);
 	uint16_t duty_c = motor_sine_3pwm_phase_to_duty_permyriad(
 			motor_sine_3pwm_lut_get(angle_c_u16), amplitude_permyriad);
+
+	return motor_3pwm_set_duty_abc(motor_3pwm_h, duty_a, duty_b, duty_c);
+}
+
+bool motor_sine_3pwm_apply_phase_q15(motor_3pwm_handle_t *motor_3pwm_h,
+									 int16_t phase_a_q15,
+									 int16_t phase_b_q15,
+									 int16_t phase_c_q15)
+{
+	if (motor_3pwm_h == NULL) return false;
+
+	/* Clamp phase commands to the valid normalized range before duty conversion. */
+	int16_t phase_a_q15_clamped = motor_sine_3pwm_clamp_q15((int32_t)phase_a_q15);
+	int16_t phase_b_q15_clamped = motor_sine_3pwm_clamp_q15((int32_t)phase_b_q15);
+	int16_t phase_c_q15_clamped = motor_sine_3pwm_clamp_q15((int32_t)phase_c_q15);
+
+	/* Convert normalized phase commands directly into centered duties. */
+	uint16_t duty_a = motor_sine_3pwm_phase_to_duty_permyriad(
+			phase_a_q15_clamped,
+			MOTOR_SINE_3PWM_MAX_AMPLITUDE_PERMYRIAD);
+	uint16_t duty_b = motor_sine_3pwm_phase_to_duty_permyriad(
+			phase_b_q15_clamped,
+			MOTOR_SINE_3PWM_MAX_AMPLITUDE_PERMYRIAD);
+	uint16_t duty_c = motor_sine_3pwm_phase_to_duty_permyriad(
+			phase_c_q15_clamped,
+			MOTOR_SINE_3PWM_MAX_AMPLITUDE_PERMYRIAD);
 
 	return motor_3pwm_set_duty_abc(motor_3pwm_h, duty_a, duty_b, duty_c);
 }

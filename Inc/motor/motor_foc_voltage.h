@@ -3,15 +3,14 @@
 
 /**
  * @file motor_foc_voltage.h
- * @brief Q-axis-only voltage-mode FOC actuation kernel.
+ * @brief Voltage-mode FOC actuation helper.
  *
- * This module applies one q-axis-only voltage vector through the 3-PWM stage.
- * This first step is limited to the special case Ud = 0.
+ * This module applies rotor-frame d/q voltage requests through the 3-PWM stage.
  *
  * Responsibilities:
  * - bind shared motor-domain and 3-PWM handles
  * - read measured electrical angle from shared motor measurements
- * - apply q-axis-only voltage request in permyriad units
+ * - apply d/q voltage requests in permyriad units
  *
  * @note Electrical angle uses full-turn uint16 units.
  * @note Amplitude uses permyriad units (0..10000).
@@ -54,10 +53,25 @@ bool motor_foc_voltage_init(motor_foc_voltage_handle_t *motor_foc_voltage_h,
 							const motor_foc_voltage_cfg_t *motor_foc_voltage_cfg);
 
 /**
+ * @brief Apply d/q voltage request in rotor frame.
+ *
+ * This function reads measured electrical angle and converts the rotor-frame
+ * voltage request (Ud, Uq) into the equivalent stationary-frame actuation.
+ * The configured phase-sequence sign still controls q-axis handedness.
+ *
+ * @param motor_foc_voltage_h Pointer to FOC voltage handle.
+ * @param ud_permyriad D-axis voltage request in permyriad units.
+ * @param uq_permyriad Q-axis voltage request in permyriad units.
+ * @return true if actuation succeeded, false otherwise.
+ */
+bool motor_foc_voltage_apply_dq(motor_foc_voltage_handle_t *motor_foc_voltage_h,
+								int16_t ud_permyriad,
+								int16_t uq_permyriad);
+
+/**
  * @brief Apply q-axis-only voltage request with Ud fixed to zero.
  *
- * This function reads the measured electrical angle from shared motor state
- * and applies one signed q-axis quarter-turn shift selected by configuration.
+ * This helper wraps motor_foc_voltage_apply_dq(..., 0, uq_permyriad).
  *
  * @param motor_foc_voltage_h Pointer to FOC voltage handle.
  * @param uq_permyriad Q-axis voltage request in permyriad units.
