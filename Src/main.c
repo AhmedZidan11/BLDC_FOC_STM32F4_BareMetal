@@ -304,11 +304,50 @@ static void app_update_openloop_drive(app_context_t *app,
 									  const motor_openloop_cfg_t *motor_openloop_cfg,
 									  uint32_t now_ms)
 {
+	uint16_t raw_electrical_angle_u16 = 0u;
+	uint16_t electrical_offset_u16 = 0u;
+
 	/* Hold the alignment vector before phase progression starts. */
 	if (app->alignment_done == false)
 	{
 		if ((now_ms - app->alignment_start_ms) >= APP_MOTOR_TEST_ALIGNMENT_DURATION_MS)
 		{
+			/* Wait for one valid consumed sensor sample before alignment calibration. */
+			if (app->latest_sample_valid == false)
+			{
+				return;
+			}
+
+			/* Convert measured mechanical angle into raw electrical angle without offset. */
+			if (!motor_electrical_angle_compute_raw(&app->motor_electrical_angle_h,
+													app->latest_logged_angle_u16,
+													&raw_electrical_angle_u16))
+			{
+				app_fatal_stop(app, "MEANG", "raw angle failed");
+			}
+
+			/* offset = commanded_alignment_electrical - measured_raw_electrical. */
+			electrical_offset_u16 =
+					(uint16_t)(APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16 -
+							  raw_electrical_angle_u16);
+			if (!motor_electrical_angle_set_offset(&app->motor_electrical_angle_h, electrical_offset_u16))
+			{
+				app_fatal_stop(app, "MEANG", "offset set failed");
+			}
+
+			/* Publish the calibrated measured electrical angle from the same alignment sample. */
+			if (!motor_electrical_angle_update(&app->motor_electrical_angle_h, app->latest_logged_angle_u16))
+			{
+				app_fatal_stop(app, "MEANG", "aligned update failed");
+			}
+
+			/* Emit one machine-friendly alignment capture record. */
+			printf("A,%lu,%u,%u,%u\r\n",
+				   (unsigned long)app->latest_logged_timestamp_us,
+				   (unsigned)app->latest_logged_angle_u16,
+				   (unsigned)raw_electrical_angle_u16,
+				   (unsigned)electrical_offset_u16);
+
 			app->motor_h.targets.target_amplitude_permyriad = APP_MOTOR_TEST_RUN_AMPLITUDE_PERMYRIAD;
 			app->alignment_done = true;
 			app->last_openloop_update_ms = now_ms;
@@ -388,7 +427,7 @@ int main(void)
 					 &motor_electrical_angle_cfg,
 					 &motor_speed_reference_estimator_cfg,
 					 &as5600_analog_cfg);
-	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16);
+	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELCTRICAL_ANGLE_U16);
 
 	/* Loop forever */
 	while(1)

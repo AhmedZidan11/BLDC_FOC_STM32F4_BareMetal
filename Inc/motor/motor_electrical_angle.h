@@ -63,6 +63,20 @@ bool motor_electrical_angle_update(motor_electrical_angle_handle_t *motor_electr
 								   uint16_t mechanical_angle_u16);
 
 /**
+ * @brief Compute raw electrical angle from one measured mechanical angle sample.
+ *
+ * This conversion applies pole pairs only and does not apply electrical offset.
+ *
+ * @param motor_electrical_angle_h Pointer to electrical-angle handle.
+ * @param mechanical_angle_u16 Measured mechanical angle in full-turn uint16 units.
+ * @param electrical_angle_u16 Pointer to raw electrical angle output.
+ * @return true if conversion succeeded, false otherwise.
+ */
+bool motor_electrical_angle_compute_raw(motor_electrical_angle_handle_t *motor_electrical_angle_h,
+										uint16_t mechanical_angle_u16,
+										uint16_t *electrical_angle_u16);
+
+/**
  * @brief Set the electrical offset used for measured electrical angle conversion.
  *
  * @param motor_electrical_angle_h Pointer to electrical-angle handle.
