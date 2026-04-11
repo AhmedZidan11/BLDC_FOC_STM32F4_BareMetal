@@ -15,6 +15,11 @@ bool motor_foc_voltage_init(motor_foc_voltage_handle_t *motor_foc_voltage_h,
 {
 	if ((motor_foc_voltage_h == NULL) || (motor_foc_voltage_cfg == NULL)) return false;
 	if ((motor_foc_voltage_cfg->motor_h == NULL) || (motor_foc_voltage_cfg->motor_3pwm_h == NULL)) return false;
+	if ((motor_foc_voltage_cfg->phase_sequence_sign != 1) &&
+		(motor_foc_voltage_cfg->phase_sequence_sign != -1))
+	{
+		return false;
+	}
 
 	motor_foc_voltage_h->cfg = motor_foc_voltage_cfg;
 	motor_foc_voltage_h->motor_h = motor_foc_voltage_cfg->motor_h;
@@ -42,9 +47,16 @@ bool motor_foc_voltage_apply_q_only(motor_foc_voltage_handle_t *motor_foc_voltag
 	if (motor_h->limits.max_amplitude_permyriad > MOTOR_SINE_3PWM_MAX_AMPLITUDE_PERMYRIAD) return false;
 	if (uq_permyriad > motor_h->limits.max_amplitude_permyriad) return false;
 
-	/* For Ud = 0 and Uq > 0, voltage vector angle = measured electrical angle - 90 degrees. */
-	uint16_t uq_vector_angle_u16 = (uint16_t)(motor_h->measurements.electrical_angle_u16 -
-											   MOTOR_FOC_VOLTAGE_Q_AXIS_SHIFT_90);
+	/* For Ud = 0, q-axis uses one signed quarter-turn shift selected by phase-sequence sign. */
+	uint16_t uq_vector_angle_u16 = motor_h->measurements.electrical_angle_u16;
+	if (motor_foc_voltage_h->cfg->phase_sequence_sign > 0)
+	{
+		uq_vector_angle_u16 = (uint16_t)(uq_vector_angle_u16 + MOTOR_FOC_VOLTAGE_Q_AXIS_SHIFT_90);
+	}
+	else
+	{
+		uq_vector_angle_u16 = (uint16_t)(uq_vector_angle_u16 - MOTOR_FOC_VOLTAGE_Q_AXIS_SHIFT_90);
+	}
 
 	/* Apply shared sine 3-phase modulation for the q-only vector angle. */
 	if (!motor_sine_3pwm_apply(motor_foc_voltage_h->motor_3pwm_h,

@@ -12,6 +12,8 @@
 #define APP_MOTOR_TEST_POLE_PAIRS                                   7u
 #define APP_MOTOR_TEST_TARGET_MECHANICAL_SPEED_MRPM                 60000
 #define APP_MOTOR_TEST_SENSOR_DIRECTION                             (-1)
+/* Phase-sequence sign for q-axis direction: +1 => +90 deg, -1 => -90 deg. */
+#define APP_MOTOR_TEST_PHASE_SEQUENCE_SIGN                          (-1)
 #define APP_MOTOR_TEST_ALIGNMENT_AMPLITUDE_PERMYRIAD                1500u
 #define APP_MOTOR_TEST_RUN_AMPLITUDE_PERMYRIAD                      2000u
 #define APP_MOTOR_TEST_MAX_AMPLITUDE_PERMYRIAD                      10000u

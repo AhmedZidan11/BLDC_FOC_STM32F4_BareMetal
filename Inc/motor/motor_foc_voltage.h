@@ -29,6 +29,7 @@
 typedef struct {
 	motor_handle_t *motor_h;
 	motor_3pwm_handle_t *motor_3pwm_h;
+	int8_t phase_sequence_sign; /* +1 => q-axis +90 deg, -1 => q-axis -90 deg. */
 } motor_foc_voltage_cfg_t;
 
 /**
@@ -55,9 +56,8 @@ bool motor_foc_voltage_init(motor_foc_voltage_handle_t *motor_foc_voltage_h,
 /**
  * @brief Apply q-axis-only voltage request with Ud fixed to zero.
  *
- * This function reads the measured electrical angle from shared motor state,
- * shifts it by +90 electrical degrees for q-axis-only actuation, and applies
- * the resulting three phase duties through motor_3pwm.
+ * This function reads the measured electrical angle from shared motor state
+ * and applies one signed q-axis quarter-turn shift selected by configuration.
  *
  * @param motor_foc_voltage_h Pointer to FOC voltage handle.
  * @param uq_permyriad Q-axis voltage request in permyriad units.

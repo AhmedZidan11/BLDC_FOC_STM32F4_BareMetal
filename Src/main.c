@@ -454,6 +454,7 @@ int main(void)
 	const motor_foc_voltage_cfg_t motor_foc_voltage_cfg = {
 			.motor_h = &app.motor_h,
 			.motor_3pwm_h = &app.motor_3pwm_h,
+			.phase_sequence_sign = APP_MOTOR_TEST_PHASE_SEQUENCE_SIGN,
 	};
 	const motor_electrical_angle_cfg_t motor_electrical_angle_cfg = {
 			.motor_h = &app.motor_h,
