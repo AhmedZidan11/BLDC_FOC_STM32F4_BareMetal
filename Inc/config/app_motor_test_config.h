@@ -19,6 +19,7 @@
 #define APP_MOTOR_TEST_RAMP_DURATION_MS                             300u
 #define APP_MOTOR_TEST_ALIGNMENT_DURATION_MS                        400u
 #define APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16               0u
+#define APP_MOTOR_TEST_FOC_UQ_PERMYRIAD                             2000u
 #define APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US                   100u
 #define APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT               5u
 #define APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS                          100u

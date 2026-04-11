@@ -28,6 +28,7 @@
 #include "motor/motor.h"
 #include "motor/motor_3pwm.h"
 #include "motor/motor_electrical_angle.h"
+#include "motor/motor_foc_voltage.h"
 #include "motor/motor_openloop.h"
 #include "motor/motor_speed_reference_estimator.h"
 
@@ -41,6 +42,7 @@ typedef struct app_context_t {
 	motor_handle_t motor_h;
 	motor_3pwm_handle_t motor_3pwm_h;
 	motor_openloop_handle_t motor_openloop_h;
+	motor_foc_voltage_handle_t motor_foc_voltage_h;
 	motor_electrical_angle_handle_t motor_electrical_angle_h;
 	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
 	as5600_analog_handle_t as5600_analog_h;
@@ -163,6 +165,7 @@ static void app_init_context(app_context_t *app)
 	app->motor_h = app_build_motor_handle();
 	app->motor_3pwm_h = (motor_3pwm_handle_t){0};
 	app->motor_openloop_h = (motor_openloop_handle_t){0};
+	app->motor_foc_voltage_h = (motor_foc_voltage_handle_t){0};
 	app->motor_electrical_angle_h = (motor_electrical_angle_handle_t){0};
 	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
 	app->as5600_analog_h = (as5600_analog_handle_t){0};
@@ -195,6 +198,7 @@ static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
  * @param app Pointer to application runtime context.
  * @param motor_3pwm_cfg Pointer to motor 3PWM configuration.
  * @param motor_openloop_cfg Pointer to motor open-loop configuration.
+ * @param motor_foc_voltage_cfg Pointer to motor FOC voltage configuration.
  * @param motor_electrical_angle_cfg Pointer to electrical-angle configuration.
  * @param motor_speed_reference_estimator_cfg Pointer to reference-estimator configuration.
  * @param as5600_analog_cfg Pointer to AS5600 analog configuration.
@@ -202,6 +206,7 @@ static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
 static void app_init_modules(app_context_t *app,
 							 const motor_3pwm_cfg_t *motor_3pwm_cfg,
 							 const motor_openloop_cfg_t *motor_openloop_cfg,
+							 const motor_foc_voltage_cfg_t *motor_foc_voltage_cfg,
 							 const motor_electrical_angle_cfg_t *motor_electrical_angle_cfg,
 							 const motor_speed_reference_estimator_cfg_t *motor_speed_reference_estimator_cfg,
 							 const as5600_analog_cfg_t *as5600_analog_cfg)
@@ -220,6 +225,12 @@ static void app_init_modules(app_context_t *app,
 	if (!motor_openloop_init(&app->motor_openloop_h, motor_openloop_cfg))
 	{
 		app_fatal_trap("MOPEN", "init failed");
+	}
+
+	/* Initialize the q-only voltage FOC kernel for post-alignment runtime tests. */
+	if (!motor_foc_voltage_init(&app->motor_foc_voltage_h, motor_foc_voltage_cfg))
+	{
+		app_fatal_trap("MFOC", "init failed");
 	}
 
 	/* Initialize the measured electrical-angle helper for future sensored paths. */
@@ -307,15 +318,15 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
 }
 
 /**
- * @brief Advance the alignment hold and the active open-loop drive path.
+ * @brief Advance alignment hold and the post-alignment runtime actuation path.
  *
  * @param app Pointer to application runtime context.
  * @param motor_openloop_cfg Pointer to motor open-loop configuration.
  * @param now_ms Current time in milliseconds.
  */
-static void app_update_openloop_drive(app_context_t *app,
-									  const motor_openloop_cfg_t *motor_openloop_cfg,
-									  uint32_t now_ms)
+static void app_update_runtime_actuation(app_context_t *app,
+										 const motor_openloop_cfg_t *motor_openloop_cfg,
+										 uint32_t now_ms)
 {
 	uint16_t raw_electrical_angle_u16 = 0u;
 	uint16_t electrical_offset_u16 = 0u;
@@ -369,12 +380,13 @@ static void app_update_openloop_drive(app_context_t *app,
 		return;
 	}
 
-	/* Advance the active powered open-loop command path at the configured period. */
+	/* After alignment, switch from open-loop ramp updates to q-only sensored voltage actuation. */
 	if ((now_ms - app->last_openloop_update_ms) >= motor_openloop_cfg->update_period_ms)
 	{
-		if (!motor_openloop_update(&app->motor_openloop_h))
+		if (!motor_foc_voltage_apply_q_only(&app->motor_foc_voltage_h,
+											APP_MOTOR_TEST_FOC_UQ_PERMYRIAD))
 		{
-			app_fatal_stop(app, "MOPEN", "update failed");
+			app_fatal_stop(app, "MFOC", "apply failed");
 		}
 
 		app->last_openloop_update_ms += motor_openloop_cfg->update_period_ms;
@@ -439,6 +451,10 @@ int main(void)
 			.update_period_ms = APP_MOTOR_TEST_UPDATE_PERIOD_MS,
 			.phase_increment_ramp_step_u32 = derived_cfg.phase_increment_ramp_step_u32,
 	};
+	const motor_foc_voltage_cfg_t motor_foc_voltage_cfg = {
+			.motor_h = &app.motor_h,
+			.motor_3pwm_h = &app.motor_3pwm_h,
+	};
 	const motor_electrical_angle_cfg_t motor_electrical_angle_cfg = {
 			.motor_h = &app.motor_h,
 			.electrical_offset_u16 = 0u,
@@ -462,6 +478,7 @@ int main(void)
 	app_init_modules(&app,
 					 &motor_3pwm_cfg,
 					 &motor_openloop_cfg,
+					 &motor_foc_voltage_cfg,
 					 &motor_electrical_angle_cfg,
 					 &motor_speed_reference_estimator_cfg,
 					 &as5600_analog_cfg);
@@ -485,8 +502,8 @@ int main(void)
 			app_handle_consumed_angle_sample(&app, mechanical_angle_u16, now_us);
 		}
 
-		/* Advance the active powered open-loop motor test path. */
-		app_update_openloop_drive(&app, &motor_openloop_cfg, now_ms);
+		/* Advance alignment and post-alignment runtime actuation. */
+		app_update_runtime_actuation(&app, &motor_openloop_cfg, now_ms);
 
 		/* Emit the reduced-rate UART log line. */
 		app_emit_angle_log(&app, now_ms);

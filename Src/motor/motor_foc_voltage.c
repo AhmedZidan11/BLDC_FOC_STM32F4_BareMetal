@@ -42,8 +42,8 @@ bool motor_foc_voltage_apply_q_only(motor_foc_voltage_handle_t *motor_foc_voltag
 	if (motor_h->limits.max_amplitude_permyriad > MOTOR_SINE_3PWM_MAX_AMPLITUDE_PERMYRIAD) return false;
 	if (uq_permyriad > motor_h->limits.max_amplitude_permyriad) return false;
 
-	/* For Ud = 0 and Uq > 0, voltage vector angle = measured electrical angle + 90 degrees. */
-	uint16_t uq_vector_angle_u16 = (uint16_t)(motor_h->measurements.electrical_angle_u16 +
+	/* For Ud = 0 and Uq > 0, voltage vector angle = measured electrical angle - 90 degrees. */
+	uint16_t uq_vector_angle_u16 = (uint16_t)(motor_h->measurements.electrical_angle_u16 -
 											   MOTOR_FOC_VOLTAGE_Q_AXIS_SHIFT_90);
 
 	/* Apply shared sine 3-phase modulation for the q-only vector angle. */
