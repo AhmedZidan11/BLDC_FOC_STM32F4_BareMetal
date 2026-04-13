@@ -91,6 +91,15 @@ typedef struct {
 } motor_openloop_state_t;
 
 /**
+ * @brief Low-latency speed-feedback runtime state.
+ *
+ */
+typedef struct {
+	int32_t raw_mechanical_speed_mrpm;
+	int32_t filtered_mechanical_speed_mrpm;
+} motor_speed_feedback_state_t;
+
+/**
  * @brief Reference speed-estimator runtime state.
  *
  */
@@ -117,6 +126,7 @@ typedef struct {
 	motor_limits_t limits;
 	motor_status_t status;
 	motor_openloop_state_t openloop;
+	motor_speed_feedback_state_t speed_feedback;
 	motor_speed_reference_estimator_state_t speed_reference_estimator;
 } motor_handle_t;
 

@@ -26,6 +26,8 @@
 #define APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US                   100u
 #define APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT               5u
 #define APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS                          100u
+/* Speed-feedback LPF time constant tau (larger tau => smoother, smaller tau => faster). */
+#define APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS       30u
 #define APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT 50u
 #define APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE                        4095u
 

@@ -30,6 +30,7 @@
 #include "motor/motor_electrical_angle.h"
 #include "motor/motor_foc_voltage.h"
 #include "motor/motor_openloop.h"
+#include "motor/motor_speed_feedback.h"
 #include "motor/motor_speed_reference_estimator.h"
 
 extern usart2_handle_t USART2_H;
@@ -45,6 +46,7 @@ typedef struct app_context_t {
 	motor_openloop_handle_t motor_openloop_h;
 	motor_foc_voltage_handle_t motor_foc_voltage_h;
 	motor_electrical_angle_handle_t motor_electrical_angle_h;
+	motor_speed_feedback_handle_t motor_speed_feedback_h;
 	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
 	as5600_analog_handle_t as5600_analog_h;
 	uint32_t last_angle_log_ms;
@@ -52,7 +54,6 @@ typedef struct app_context_t {
 	uint32_t alignment_start_ms;
 	uint16_t current_foc_uq_permyriad;
 	uint64_t latest_logged_timestamp_us;
-	int32_t latest_logged_speed_mrpm;
 	uint16_t latest_logged_mechanical_angle_u16;
 	bool latest_sample_valid;
 	bool alignment_done;
@@ -188,6 +189,7 @@ static void app_init_context(app_context_t *app)
 	app->motor_openloop_h = (motor_openloop_handle_t){0};
 	app->motor_foc_voltage_h = (motor_foc_voltage_handle_t){0};
 	app->motor_electrical_angle_h = (motor_electrical_angle_handle_t){0};
+	app->motor_speed_feedback_h = (motor_speed_feedback_handle_t){0};
 	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
 	app->as5600_analog_h = (as5600_analog_handle_t){0};
 	app->last_angle_log_ms = 0u;
@@ -195,7 +197,6 @@ static void app_init_context(app_context_t *app)
 	app->alignment_start_ms = 0u;
 	app->current_foc_uq_permyriad = 0u;
 	app->latest_logged_timestamp_us = 0u;
-	app->latest_logged_speed_mrpm = 0;
 	app->latest_logged_mechanical_angle_u16 = 0u;
 	app->latest_sample_valid = false;
 	app->alignment_done = false;
@@ -222,6 +223,7 @@ static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
  * @param motor_openloop_cfg Pointer to motor open-loop configuration.
  * @param motor_foc_voltage_cfg Pointer to motor FOC voltage configuration.
  * @param motor_electrical_angle_cfg Pointer to electrical-angle configuration.
+ * @param motor_speed_feedback_cfg Pointer to speed-feedback configuration.
  * @param motor_speed_reference_estimator_cfg Pointer to reference-estimator configuration.
  * @param as5600_analog_cfg Pointer to AS5600 analog configuration.
  */
@@ -230,6 +232,7 @@ static void app_init_modules(app_context_t *app,
 							 const motor_openloop_cfg_t *motor_openloop_cfg,
 							 const motor_foc_voltage_cfg_t *motor_foc_voltage_cfg,
 							 const motor_electrical_angle_cfg_t *motor_electrical_angle_cfg,
+							 const motor_speed_feedback_cfg_t *motor_speed_feedback_cfg,
 							 const motor_speed_reference_estimator_cfg_t *motor_speed_reference_estimator_cfg,
 							 const as5600_analog_cfg_t *as5600_analog_cfg)
 {
@@ -259,6 +262,12 @@ static void app_init_modules(app_context_t *app,
 	if (!motor_electrical_angle_init(&app->motor_electrical_angle_h, motor_electrical_angle_cfg))
 	{
 		app_fatal_trap("MEANG", "init failed");
+	}
+
+	/* Initialize the low-latency speed-feedback path for future control use. */
+	if (!motor_speed_feedback_init(&app->motor_speed_feedback_h, motor_speed_feedback_cfg))
+	{
+		app_fatal_trap("MSPD", "init failed");
 	}
 
 	/* Initialize the reference speed-estimator baseline. */
@@ -332,10 +341,15 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
 		app_fatal_stop(app, "MEST", "update failed");
 	}
 
+	/* Update the low-latency speed feedback using fixed publish cadence. */
+	if (!motor_speed_feedback_update(&app->motor_speed_feedback_h, mechanical_angle_u16))
+	{
+		app_fatal_stop(app, "MSPD", "update failed");
+	}
+
 	/* Keep the latest consumed sample for the reduced-rate UART log stream. */
 	app->latest_logged_timestamp_us = sample_timestamp_us;
 	app->latest_logged_mechanical_angle_u16 = mechanical_angle_u16;
-	app->latest_logged_speed_mrpm = app->motor_h.measurements.measured_mechanical_speed_mrpm;
 	app->latest_sample_valid = true;
 }
 
@@ -442,39 +456,25 @@ static void app_update_runtime_actuation(app_context_t *app,
  */
 static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 {
-	uint16_t raw_electrical_angle_u16 = 0u;
 	uint16_t mechanical_angle_deg_x10 = 0u;
-	uint16_t raw_electrical_angle_deg_x10 = 0u;
-	uint16_t measured_electrical_angle_deg_x10 = 0u;
-	uint16_t electrical_offset_deg_x10 = 0u;
+	int32_t raw_mechanical_speed_mrpm = 0;
+	int32_t filtered_mechanical_speed_mrpm = 0;
 
 	/* Print the latest consumed sample at the configured lower UART rate. */
 	if (((now_ms - app->last_angle_log_ms) >= APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS) &&
 		(app->latest_sample_valid == true))
 	{
-		/* Recompute raw electrical angle from the current measured mechanical angle. */
-		if (!motor_electrical_angle_compute_raw(&app->motor_electrical_angle_h,
-												app->motor_h.measurements.mechanical_angle_u16,
-												&raw_electrical_angle_u16))
-		{
-			app_fatal_stop(app, "MEANG", "raw debug failed");
-		}
-
-		/* Convert angle fields to tenths of degree for readable runtime diagnostics. */
+		/* Convert the latest consumed mechanical angle to tenths of degree. */
 		mechanical_angle_deg_x10 =
-				app_angle_u16_to_deg_x10(app->motor_h.measurements.mechanical_angle_u16);
-		raw_electrical_angle_deg_x10 = app_angle_u16_to_deg_x10(raw_electrical_angle_u16);
-		measured_electrical_angle_deg_x10 =
-				app_angle_u16_to_deg_x10(app->motor_h.measurements.electrical_angle_u16);
-		electrical_offset_deg_x10 =
-				app_angle_u16_to_deg_x10(app->motor_electrical_angle_h.electrical_offset_u16);
+				app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
+		raw_mechanical_speed_mrpm = app->motor_h.speed_feedback.raw_mechanical_speed_mrpm;
+		filtered_mechanical_speed_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
 
-		printf("D,%u,%u,%u,%u,%u\r\n",
+		printf("S,%lu,%u,%ld,%ld\r\n",
+			   (unsigned long)app->latest_logged_timestamp_us,
 			   (unsigned)mechanical_angle_deg_x10,
-			   (unsigned)raw_electrical_angle_deg_x10,
-			   (unsigned)measured_electrical_angle_deg_x10,
-			   (unsigned)electrical_offset_deg_x10,
-			   (unsigned)((app->alignment_done == true) ? 1u : 0u));
+			   (long)raw_mechanical_speed_mrpm,
+			   (long)filtered_mechanical_speed_mrpm);
 		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
 	}
 }
@@ -483,6 +483,9 @@ int main(void)
 {
 	const app_motor_test_derived_cfg_t derived_cfg = app_build_motor_test_derived_cfg();
 	app_context_t app = {0};
+	const uint32_t speed_feedback_sample_period_us =
+			APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US *
+			(uint32_t)APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT;
 	const motor_3pwm_cfg_t motor_3pwm_cfg = {
 			.pwm_h = &PWM_H,
 	};
@@ -500,6 +503,11 @@ int main(void)
 	const motor_electrical_angle_cfg_t motor_electrical_angle_cfg = {
 			.motor_h = &app.motor_h,
 			.electrical_offset_u16 = 0u,
+	};
+	const motor_speed_feedback_cfg_t motor_speed_feedback_cfg = {
+			.motor_h = &app.motor_h,
+			.sample_period_us = speed_feedback_sample_period_us,
+			.filter_time_constant_ms = APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS,
 	};
 	const motor_speed_reference_estimator_cfg_t motor_speed_reference_estimator_cfg = {
 			.motor_h = &app.motor_h,
@@ -522,6 +530,7 @@ int main(void)
 					 &motor_openloop_cfg,
 					 &motor_foc_voltage_cfg,
 					 &motor_electrical_angle_cfg,
+					 &motor_speed_feedback_cfg,
 					 &motor_speed_reference_estimator_cfg,
 					 &as5600_analog_cfg);
 	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16);
