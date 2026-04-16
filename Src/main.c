@@ -56,6 +56,7 @@ typedef struct app_context_t {
 	uint32_t last_speed_pi_update_ms;
 	uint32_t alignment_start_ms;
 	uint16_t current_foc_uq_permyriad;
+	int32_t shadow_pi_target_mechanical_speed_mrpm;
 	uint64_t latest_logged_timestamp_us;
 	uint16_t latest_logged_mechanical_angle_u16;
 	bool latest_sample_valid;
@@ -202,6 +203,9 @@ static void app_init_context(app_context_t *app)
 	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
 	app->current_foc_uq_permyriad = 0u;
+	/* Use a dedicated near-operating-point shadow target for informative PI observation. */
+	app->shadow_pi_target_mechanical_speed_mrpm =
+			APP_MOTOR_TEST_SPEED_PI_SHADOW_TARGET_MECHANICAL_SPEED_MRPM;
 	app->latest_logged_timestamp_us = 0u;
 	app->latest_logged_mechanical_angle_u16 = 0u;
 	app->latest_sample_valid = false;
@@ -379,11 +383,18 @@ static void app_update_speed_pi_shadow(app_context_t *app,
 									   uint16_t speed_pi_update_period_ms,
 									   uint32_t now_ms)
 {
+	if ((app->alignment_done == false) ||
+		(app->motor_h.status.has_valid_mechanical_speed == false))
+	{
+		app->last_speed_pi_update_ms = now_ms;
+		return;
+	}
+
 	/* Update shadow PI output without changing the active motor actuation path. */
 	if ((now_ms - app->last_speed_pi_update_ms) >= speed_pi_update_period_ms)
 	{
 		if (!motor_speed_pi_update(&app->motor_speed_pi_h,
-								   app->motor_h.targets.target_mechanical_speed_mrpm,
+								   app->shadow_pi_target_mechanical_speed_mrpm,
 								   app->motor_h.measurements.measured_mechanical_speed_mrpm))
 		{
 			app_fatal_stop(app, "MSPI", "update failed");
@@ -451,10 +462,15 @@ static void app_update_runtime_actuation(app_context_t *app,
 				   (unsigned)electrical_offset_u16);
 
 			/* Start q-only FOC runtime with zero Uq and ramp up in the run phase. */
+			if (!motor_speed_pi_reset(&app->motor_speed_pi_h))
+			{
+				app_fatal_stop(app, "MSPI", "reset failed");
+			}
 			app->current_foc_uq_permyriad = 0u;
 			app->motor_h.targets.target_amplitude_permyriad = APP_MOTOR_TEST_RUN_AMPLITUDE_PERMYRIAD;
 			app->alignment_done = true;
 			app->last_openloop_update_ms = now_ms;
+			app->last_speed_pi_update_ms = now_ms;
 		}
 
 		return;
@@ -497,9 +513,11 @@ static void app_update_runtime_actuation(app_context_t *app,
 static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 {
 	uint16_t mechanical_angle_deg_x10 = 0u;
-	int32_t target_mechanical_speed_mrpm = 0;
+	int32_t shadow_target_mechanical_speed_mrpm = 0;
 	int32_t raw_mechanical_speed_mrpm = 0;
 	int32_t filtered_mechanical_speed_mrpm = 0;
+	int32_t speed_error_mrpm = 0;
+	int32_t integrator_term_permyriad = 0;
 	int32_t shadow_uq_command_permyriad = 0;
 
 	/* Print the latest consumed sample at the configured lower UART rate. */
@@ -509,17 +527,21 @@ static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 		/* Convert the latest consumed mechanical angle to tenths of degree. */
 		mechanical_angle_deg_x10 =
 				app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
-		target_mechanical_speed_mrpm = app->motor_h.targets.target_mechanical_speed_mrpm;
+		shadow_target_mechanical_speed_mrpm = app->shadow_pi_target_mechanical_speed_mrpm;
 		raw_mechanical_speed_mrpm = app->motor_h.speed_feedback.raw_mechanical_speed_mrpm;
 		filtered_mechanical_speed_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
+		speed_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;
+		integrator_term_permyriad = app->motor_h.speed_pi.integrator_term_permyriad;
 		shadow_uq_command_permyriad = app->motor_h.speed_pi.shadow_uq_command_permyriad;
 
-		printf("S,%lu,%u,%ld,%ld,%ld,%ld\r\n",
+		printf("S,%lu,%u,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
 			   (unsigned long)app->latest_logged_timestamp_us,
 			   (unsigned)mechanical_angle_deg_x10,
 			   (long)raw_mechanical_speed_mrpm,
 			   (long)filtered_mechanical_speed_mrpm,
-			   (long)target_mechanical_speed_mrpm,
+			   (long)shadow_target_mechanical_speed_mrpm,
+			   (long)speed_error_mrpm,
+			   (long)integrator_term_permyriad,
 			   (long)shadow_uq_command_permyriad);
 		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
 	}
@@ -554,6 +576,8 @@ int main(void)
 			.motor_h = &app.motor_h,
 			.sample_period_us = speed_feedback_sample_period_us,
 			.filter_time_constant_ms = APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS,
+			/* Keep control-direction sign separate from sensor and phase wiring signs. */
+			.control_direction_sign = APP_MOTOR_TEST_CONTROL_DIRECTION_SIGN,
 	};
 	const motor_speed_pi_cfg_t motor_speed_pi_cfg = {
 			.motor_h = &app.motor_h,

@@ -36,6 +36,8 @@ bool motor_speed_feedback_init(motor_speed_feedback_handle_t *motor_speed_feedba
 	if ((motor_speed_feedback_h == NULL) || (motor_speed_feedback_cfg == NULL)) return false;
 	if (motor_speed_feedback_cfg->motor_h == NULL) return false;
 	if (motor_speed_feedback_cfg->sample_period_us == 0u) return false;
+	if ((motor_speed_feedback_cfg->control_direction_sign != 1) &&
+		(motor_speed_feedback_cfg->control_direction_sign != -1)) return false;
 
 	motor_handle_t *motor_h = motor_speed_feedback_cfg->motor_h;
 	uint64_t sample_period_us = motor_speed_feedback_cfg->sample_period_us;
@@ -119,6 +121,9 @@ bool motor_speed_feedback_update(motor_speed_feedback_handle_t *motor_speed_feed
 					raw_mechanical_speed_num,
 					(int64_t)MOTOR_SPEED_FEEDBACK_MECHANICAL_TURN_COUNTS_U16 *
 					(int64_t)motor_speed_feedback_h->cfg->sample_period_us);
+
+	/* Apply the project control-direction sign before publishing and filtering speed. */
+	raw_mechanical_speed_mrpm *= (int64_t)motor_speed_feedback_h->cfg->control_direction_sign;
 
 	/* Apply y += k * (x - y) with fixed-point Q15 coefficient k. */
 	filter_error_mrpm =

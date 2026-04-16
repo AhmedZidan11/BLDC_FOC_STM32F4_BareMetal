@@ -131,7 +131,7 @@ bool motor_speed_pi_update(motor_speed_pi_handle_t *motor_speed_pi_h,
 		output_candidate_permyriad = proportional_term_permyriad + integrator_candidate_permyriad;
 	}
 
-	/* Clamp integrator and output in permyriad limits. */
+	/* Keep integrator clamping separate from final output clamping for clean anti-windup state. */
 	int32_t clamped_integrator_permyriad =
 			motor_speed_pi_clamp_i32(integrator_candidate_permyriad, -output_limit, output_limit);
 	int32_t shadow_uq_command_permyriad =

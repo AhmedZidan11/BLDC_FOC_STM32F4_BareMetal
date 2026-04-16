@@ -32,6 +32,7 @@ typedef struct {
 	motor_handle_t *motor_h;
 	uint32_t sample_period_us;
 	uint16_t filter_time_constant_ms; /* First-order LPF time constant tau. */
+	int8_t control_direction_sign;    /* Control-positive mechanical speed sign (+1 or -1). */
 } motor_speed_feedback_cfg_t;
 
 /**
