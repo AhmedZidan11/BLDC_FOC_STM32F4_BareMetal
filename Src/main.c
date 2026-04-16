@@ -38,7 +38,6 @@ extern usart2_handle_t USART2_H;
 
 typedef struct {
 	uint32_t phase_increment_ramp_step_u32;
-	uint16_t foc_uq_ramp_step_per_update;
 } app_motor_test_derived_cfg_t;
 
 typedef struct app_context_t {
@@ -55,8 +54,8 @@ typedef struct app_context_t {
 	uint32_t last_openloop_update_ms;
 	uint32_t last_speed_pi_update_ms;
 	uint32_t alignment_start_ms;
-	uint16_t current_foc_uq_permyriad;
-	int32_t shadow_pi_target_mechanical_speed_mrpm;
+	int16_t current_foc_uq_permyriad;
+	int32_t speed_control_target_mechanical_speed_mrpm;
 	uint64_t latest_logged_timestamp_us;
 	uint16_t latest_logged_mechanical_angle_u16;
 	bool latest_sample_valid;
@@ -120,31 +119,12 @@ static app_motor_test_derived_cfg_t app_build_motor_test_derived_cfg(void)
 			(uint32_t)((motor_test_target_phase_increment_num +
 					   ((MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm) / 2u)) /
 					  (MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm));
-	const uint32_t foc_uq_ramp_update_count =
-			(uint32_t)((APP_MOTOR_TEST_FOC_UQ_RAMP_DURATION_MS + APP_MOTOR_TEST_UPDATE_PERIOD_MS - 1u) /
-					  APP_MOTOR_TEST_UPDATE_PERIOD_MS);
 	app_motor_test_derived_cfg_t derived_cfg = {0};
 
 	/* Reach the target phase increment in roughly APP_MOTOR_TEST_RAMP_DURATION_MS. */
 	derived_cfg.phase_increment_ramp_step_u32 =
 			(uint32_t)((motor_test_target_phase_increment_u32 + motor_test_ramp_update_count - 1u) /
 					  motor_test_ramp_update_count);
-
-	/* Reach target Uq in roughly APP_MOTOR_TEST_FOC_UQ_RAMP_DURATION_MS at update cadence. */
-	if (APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD == 0u)
-	{
-		derived_cfg.foc_uq_ramp_step_per_update = 0u;
-	}
-	else if (APP_MOTOR_TEST_FOC_UQ_RAMP_DURATION_MS == 0u)
-	{
-		derived_cfg.foc_uq_ramp_step_per_update = APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD;
-	}
-	else
-	{
-		derived_cfg.foc_uq_ramp_step_per_update =
-				(uint16_t)((APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD + foc_uq_ramp_update_count - 1u) /
-						  foc_uq_ramp_update_count);
-	}
 
 	return derived_cfg;
 }
@@ -203,8 +183,8 @@ static void app_init_context(app_context_t *app)
 	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
 	app->current_foc_uq_permyriad = 0u;
-	/* Use a dedicated near-operating-point shadow target for informative PI observation. */
-	app->shadow_pi_target_mechanical_speed_mrpm =
+	/* Use the dedicated speed-control target for post-alignment closed-loop updates. */
+	app->speed_control_target_mechanical_speed_mrpm =
 			APP_MOTOR_TEST_SPEED_PI_SHADOW_TARGET_MECHANICAL_SPEED_MRPM;
 	app->latest_logged_timestamp_us = 0u;
 	app->latest_logged_mechanical_angle_u16 = 0u;
@@ -373,15 +353,15 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
 }
 
 /**
- * @brief Run one shadow-mode speed PI update at fixed cadence.
+ * @brief Run one speed-controller update at fixed cadence.
  *
  * @param app Pointer to application runtime context.
  * @param speed_pi_update_period_ms PI update period in milliseconds.
  * @param now_ms Current time in milliseconds.
  */
-static void app_update_speed_pi_shadow(app_context_t *app,
-									   uint16_t speed_pi_update_period_ms,
-									   uint32_t now_ms)
+static void app_update_speed_controller(app_context_t *app,
+										uint16_t speed_pi_update_period_ms,
+										uint32_t now_ms)
 {
 	if ((app->alignment_done == false) ||
 		(app->motor_h.status.has_valid_mechanical_speed == false))
@@ -390,11 +370,11 @@ static void app_update_speed_pi_shadow(app_context_t *app,
 		return;
 	}
 
-	/* Update shadow PI output without changing the active motor actuation path. */
+	/* Update controller output in P-only mode (Ki=0 by config for this first loop-closure test). */
 	if ((now_ms - app->last_speed_pi_update_ms) >= speed_pi_update_period_ms)
 	{
 		if (!motor_speed_pi_update(&app->motor_speed_pi_h,
-								   app->shadow_pi_target_mechanical_speed_mrpm,
+								   app->speed_control_target_mechanical_speed_mrpm,
 								   app->motor_h.measurements.measured_mechanical_speed_mrpm))
 		{
 			app_fatal_stop(app, "MSPI", "update failed");
@@ -409,12 +389,10 @@ static void app_update_speed_pi_shadow(app_context_t *app,
  *
  * @param app Pointer to application runtime context.
  * @param motor_openloop_cfg Pointer to motor open-loop configuration.
- * @param foc_uq_ramp_step_per_update Uq increment applied on each runtime update step.
  * @param now_ms Current time in milliseconds.
  */
 static void app_update_runtime_actuation(app_context_t *app,
 										 const motor_openloop_cfg_t *motor_openloop_cfg,
-										 uint16_t foc_uq_ramp_step_per_update,
 										 uint32_t now_ms)
 {
 	uint16_t raw_electrical_angle_u16 = 0u;
@@ -461,7 +439,7 @@ static void app_update_runtime_actuation(app_context_t *app,
 				   (unsigned)raw_electrical_angle_u16,
 				   (unsigned)electrical_offset_u16);
 
-			/* Start q-only FOC runtime with zero Uq and ramp up in the run phase. */
+			/* Start q-only FOC runtime with zero Uq before first closed-loop update is applied. */
 			if (!motor_speed_pi_reset(&app->motor_speed_pi_h))
 			{
 				app_fatal_stop(app, "MSPI", "reset failed");
@@ -479,25 +457,15 @@ static void app_update_runtime_actuation(app_context_t *app,
 	/* After alignment, switch from open-loop ramp updates to q-only sensored voltage actuation. */
 	if ((now_ms - app->last_openloop_update_ms) >= motor_openloop_cfg->update_period_ms)
 	{
+		/* Use the current limited speed-controller output as the applied q-axis command. */
+		app->current_foc_uq_permyriad =
+				(int16_t)app->motor_h.speed_pi.shadow_uq_command_permyriad;
+
 		if (!motor_foc_voltage_apply_dq(&app->motor_foc_voltage_h,
 										0,
-										(int16_t)app->current_foc_uq_permyriad))
+										app->current_foc_uq_permyriad))
 		{
 			app_fatal_stop(app, "MFOC", "apply failed");
-		}
-
-		/* Soft-start refinement: ramp Uq toward the configured target at update cadence. */
-		if (app->current_foc_uq_permyriad < APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD)
-		{
-			uint16_t uq_delta =
-					(uint16_t)(APP_MOTOR_TEST_FOC_UQ_TARGET_PERMYRIAD - app->current_foc_uq_permyriad);
-			if (uq_delta > foc_uq_ramp_step_per_update)
-			{
-				uq_delta = foc_uq_ramp_step_per_update;
-			}
-
-			app->current_foc_uq_permyriad =
-					(uint16_t)(app->current_foc_uq_permyriad + uq_delta);
 		}
 
 		app->last_openloop_update_ms += motor_openloop_cfg->update_period_ms;
@@ -513,12 +481,10 @@ static void app_update_runtime_actuation(app_context_t *app,
 static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 {
 	uint16_t mechanical_angle_deg_x10 = 0u;
-	int32_t shadow_target_mechanical_speed_mrpm = 0;
-	int32_t raw_mechanical_speed_mrpm = 0;
+	int32_t speed_target_mechanical_speed_mrpm = 0;
 	int32_t filtered_mechanical_speed_mrpm = 0;
 	int32_t speed_error_mrpm = 0;
-	int32_t integrator_term_permyriad = 0;
-	int32_t shadow_uq_command_permyriad = 0;
+	int32_t applied_uq_command_permyriad = 0;
 
 	/* Print the latest consumed sample at the configured lower UART rate. */
 	if (((now_ms - app->last_angle_log_ms) >= APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS) &&
@@ -527,22 +493,18 @@ static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 		/* Convert the latest consumed mechanical angle to tenths of degree. */
 		mechanical_angle_deg_x10 =
 				app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
-		shadow_target_mechanical_speed_mrpm = app->shadow_pi_target_mechanical_speed_mrpm;
-		raw_mechanical_speed_mrpm = app->motor_h.speed_feedback.raw_mechanical_speed_mrpm;
+		speed_target_mechanical_speed_mrpm = app->speed_control_target_mechanical_speed_mrpm;
 		filtered_mechanical_speed_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
 		speed_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;
-		integrator_term_permyriad = app->motor_h.speed_pi.integrator_term_permyriad;
-		shadow_uq_command_permyriad = app->motor_h.speed_pi.shadow_uq_command_permyriad;
+		applied_uq_command_permyriad = (int32_t)app->current_foc_uq_permyriad;
 
-		printf("S,%lu,%u,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+		printf("S,%lu,%u,%ld,%ld,%ld,%ld\r\n",
 			   (unsigned long)app->latest_logged_timestamp_us,
 			   (unsigned)mechanical_angle_deg_x10,
-			   (long)raw_mechanical_speed_mrpm,
 			   (long)filtered_mechanical_speed_mrpm,
-			   (long)shadow_target_mechanical_speed_mrpm,
+			   (long)speed_target_mechanical_speed_mrpm,
 			   (long)speed_error_mrpm,
-			   (long)integrator_term_permyriad,
-			   (long)shadow_uq_command_permyriad);
+			   (long)applied_uq_command_permyriad);
 		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
 	}
 }
@@ -631,13 +593,12 @@ int main(void)
 			app_handle_consumed_angle_sample(&app, mechanical_angle_u16, now_us);
 		}
 
-		/* Run shadow speed PI updates for controller-sign and scaling observation only. */
-		app_update_speed_pi_shadow(&app, APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS, now_ms);
+		/* Run closed-loop speed controller updates at fixed control cadence. */
+		app_update_speed_controller(&app, APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS, now_ms);
 
-		/* Advance alignment and post-alignment runtime actuation. */
+		/* Advance alignment and apply q-only FOC actuation with controller-driven Uq. */
 		app_update_runtime_actuation(&app,
 									 &motor_openloop_cfg,
-									 derived_cfg.foc_uq_ramp_step_per_update,
 									 now_ms);
 
 		/* Emit the reduced-rate UART log line. */

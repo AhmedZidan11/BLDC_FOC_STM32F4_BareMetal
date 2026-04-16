@@ -33,11 +33,12 @@
 #define APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS       30u
 /* Speed PI gains use Q15 fixed-point on mrpm input and permyriad output. */
 #define APP_MOTOR_TEST_SPEED_PI_KP_Q15                              1024
-#define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        4096
+/* Ki is zero temporarily so shadow PI behaves as a simpler P-only test. */
+#define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        0
 #define APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD              3000u
 #define APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS                    1u
-/* Dedicated shadow PI target kept near current runtime speed scale for informative observation. */
-#define APP_MOTOR_TEST_SPEED_PI_SHADOW_TARGET_MECHANICAL_SPEED_MRPM 10000
+/* Shadow target is kept near current runtime speed scale to avoid blind saturation. */
+#define APP_MOTOR_TEST_SPEED_PI_SHADOW_TARGET_MECHANICAL_SPEED_MRPM 200000
 #define APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT 50u
 #define APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE                        4095u
 
