@@ -31,6 +31,7 @@
 #include "motor/motor_foc_voltage.h"
 #include "motor/motor_openloop.h"
 #include "motor/motor_speed_feedback.h"
+#include "motor/motor_speed_pi.h"
 #include "motor/motor_speed_reference_estimator.h"
 
 extern usart2_handle_t USART2_H;
@@ -47,10 +48,12 @@ typedef struct app_context_t {
 	motor_foc_voltage_handle_t motor_foc_voltage_h;
 	motor_electrical_angle_handle_t motor_electrical_angle_h;
 	motor_speed_feedback_handle_t motor_speed_feedback_h;
+	motor_speed_pi_handle_t motor_speed_pi_h;
 	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
 	as5600_analog_handle_t as5600_analog_h;
 	uint32_t last_angle_log_ms;
 	uint32_t last_openloop_update_ms;
+	uint32_t last_speed_pi_update_ms;
 	uint32_t alignment_start_ms;
 	uint16_t current_foc_uq_permyriad;
 	uint64_t latest_logged_timestamp_us;
@@ -172,6 +175,7 @@ static motor_handle_t app_build_motor_handle(void)
 					.has_valid_mechanical_speed = false,
 			},
 			.openloop = {0},
+			.speed_pi = {0},
 	};
 
 	return motor_h;
@@ -190,10 +194,12 @@ static void app_init_context(app_context_t *app)
 	app->motor_foc_voltage_h = (motor_foc_voltage_handle_t){0};
 	app->motor_electrical_angle_h = (motor_electrical_angle_handle_t){0};
 	app->motor_speed_feedback_h = (motor_speed_feedback_handle_t){0};
+	app->motor_speed_pi_h = (motor_speed_pi_handle_t){0};
 	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
 	app->as5600_analog_h = (as5600_analog_handle_t){0};
 	app->last_angle_log_ms = 0u;
 	app->last_openloop_update_ms = 0u;
+	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
 	app->current_foc_uq_permyriad = 0u;
 	app->latest_logged_timestamp_us = 0u;
@@ -224,6 +230,7 @@ static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
  * @param motor_foc_voltage_cfg Pointer to motor FOC voltage configuration.
  * @param motor_electrical_angle_cfg Pointer to electrical-angle configuration.
  * @param motor_speed_feedback_cfg Pointer to speed-feedback configuration.
+ * @param motor_speed_pi_cfg Pointer to speed-PI configuration.
  * @param motor_speed_reference_estimator_cfg Pointer to reference-estimator configuration.
  * @param as5600_analog_cfg Pointer to AS5600 analog configuration.
  */
@@ -233,6 +240,7 @@ static void app_init_modules(app_context_t *app,
 							 const motor_foc_voltage_cfg_t *motor_foc_voltage_cfg,
 							 const motor_electrical_angle_cfg_t *motor_electrical_angle_cfg,
 							 const motor_speed_feedback_cfg_t *motor_speed_feedback_cfg,
+							 const motor_speed_pi_cfg_t *motor_speed_pi_cfg,
 							 const motor_speed_reference_estimator_cfg_t *motor_speed_reference_estimator_cfg,
 							 const as5600_analog_cfg_t *as5600_analog_cfg)
 {
@@ -268,6 +276,12 @@ static void app_init_modules(app_context_t *app,
 	if (!motor_speed_feedback_init(&app->motor_speed_feedback_h, motor_speed_feedback_cfg))
 	{
 		app_fatal_trap("MSPD", "init failed");
+	}
+
+	/* Initialize the shadow speed PI controller for safe closed-loop preparation. */
+	if (!motor_speed_pi_init(&app->motor_speed_pi_h, motor_speed_pi_cfg))
+	{
+		app_fatal_trap("MSPI", "init failed");
 	}
 
 	/* Initialize the reference speed-estimator baseline. */
@@ -310,6 +324,7 @@ static void app_start_motor_test(app_context_t *app, uint16_t alignment_electric
 	app->alignment_start_ms = SYSTICK_GetTimeMs();
 	app->last_angle_log_ms = app->alignment_start_ms;
 	app->last_openloop_update_ms = app->alignment_start_ms;
+	app->last_speed_pi_update_ms = app->alignment_start_ms;
 }
 
 /**
@@ -351,6 +366,31 @@ static void app_handle_consumed_angle_sample(app_context_t *app,
 	app->latest_logged_timestamp_us = sample_timestamp_us;
 	app->latest_logged_mechanical_angle_u16 = mechanical_angle_u16;
 	app->latest_sample_valid = true;
+}
+
+/**
+ * @brief Run one shadow-mode speed PI update at fixed cadence.
+ *
+ * @param app Pointer to application runtime context.
+ * @param speed_pi_update_period_ms PI update period in milliseconds.
+ * @param now_ms Current time in milliseconds.
+ */
+static void app_update_speed_pi_shadow(app_context_t *app,
+									   uint16_t speed_pi_update_period_ms,
+									   uint32_t now_ms)
+{
+	/* Update shadow PI output without changing the active motor actuation path. */
+	if ((now_ms - app->last_speed_pi_update_ms) >= speed_pi_update_period_ms)
+	{
+		if (!motor_speed_pi_update(&app->motor_speed_pi_h,
+								   app->motor_h.targets.target_mechanical_speed_mrpm,
+								   app->motor_h.measurements.measured_mechanical_speed_mrpm))
+		{
+			app_fatal_stop(app, "MSPI", "update failed");
+		}
+
+		app->last_speed_pi_update_ms += speed_pi_update_period_ms;
+	}
 }
 
 /**
@@ -457,8 +497,10 @@ static void app_update_runtime_actuation(app_context_t *app,
 static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 {
 	uint16_t mechanical_angle_deg_x10 = 0u;
+	int32_t target_mechanical_speed_mrpm = 0;
 	int32_t raw_mechanical_speed_mrpm = 0;
 	int32_t filtered_mechanical_speed_mrpm = 0;
+	int32_t shadow_uq_command_permyriad = 0;
 
 	/* Print the latest consumed sample at the configured lower UART rate. */
 	if (((now_ms - app->last_angle_log_ms) >= APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS) &&
@@ -467,14 +509,18 @@ static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 		/* Convert the latest consumed mechanical angle to tenths of degree. */
 		mechanical_angle_deg_x10 =
 				app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
+		target_mechanical_speed_mrpm = app->motor_h.targets.target_mechanical_speed_mrpm;
 		raw_mechanical_speed_mrpm = app->motor_h.speed_feedback.raw_mechanical_speed_mrpm;
 		filtered_mechanical_speed_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
+		shadow_uq_command_permyriad = app->motor_h.speed_pi.shadow_uq_command_permyriad;
 
-		printf("S,%lu,%u,%ld,%ld\r\n",
+		printf("S,%lu,%u,%ld,%ld,%ld,%ld\r\n",
 			   (unsigned long)app->latest_logged_timestamp_us,
 			   (unsigned)mechanical_angle_deg_x10,
 			   (long)raw_mechanical_speed_mrpm,
-			   (long)filtered_mechanical_speed_mrpm);
+			   (long)filtered_mechanical_speed_mrpm,
+			   (long)target_mechanical_speed_mrpm,
+			   (long)shadow_uq_command_permyriad);
 		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
 	}
 }
@@ -509,6 +555,13 @@ int main(void)
 			.sample_period_us = speed_feedback_sample_period_us,
 			.filter_time_constant_ms = APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS,
 	};
+	const motor_speed_pi_cfg_t motor_speed_pi_cfg = {
+			.motor_h = &app.motor_h,
+			.kp_q15 = APP_MOTOR_TEST_SPEED_PI_KP_Q15,
+			.ki_per_s_q15 = APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15,
+			.update_period_ms = APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS,
+			.output_limit_permyriad = APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD,
+	};
 	const motor_speed_reference_estimator_cfg_t motor_speed_reference_estimator_cfg = {
 			.motor_h = &app.motor_h,
 			.history_sample_count = APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT,
@@ -531,6 +584,7 @@ int main(void)
 					 &motor_foc_voltage_cfg,
 					 &motor_electrical_angle_cfg,
 					 &motor_speed_feedback_cfg,
+					 &motor_speed_pi_cfg,
 					 &motor_speed_reference_estimator_cfg,
 					 &as5600_analog_cfg);
 	app_start_motor_test(&app, APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16);
@@ -552,6 +606,9 @@ int main(void)
 		{
 			app_handle_consumed_angle_sample(&app, mechanical_angle_u16, now_us);
 		}
+
+		/* Run shadow speed PI updates for controller-sign and scaling observation only. */
+		app_update_speed_pi_shadow(&app, APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS, now_ms);
 
 		/* Advance alignment and post-alignment runtime actuation. */
 		app_update_runtime_actuation(&app,

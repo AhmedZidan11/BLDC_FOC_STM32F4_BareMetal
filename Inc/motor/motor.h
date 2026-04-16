@@ -100,6 +100,16 @@ typedef struct {
 } motor_speed_feedback_state_t;
 
 /**
+ * @brief Shadow-mode speed PI runtime state.
+ *
+ */
+typedef struct {
+	int32_t speed_error_mrpm;
+	int32_t integrator_term_permyriad;
+	int32_t shadow_uq_command_permyriad;
+} motor_speed_pi_state_t;
+
+/**
  * @brief Reference speed-estimator runtime state.
  *
  */
@@ -127,6 +137,7 @@ typedef struct {
 	motor_status_t status;
 	motor_openloop_state_t openloop;
 	motor_speed_feedback_state_t speed_feedback;
+	motor_speed_pi_state_t speed_pi;
 	motor_speed_reference_estimator_state_t speed_reference_estimator;
 } motor_handle_t;
 

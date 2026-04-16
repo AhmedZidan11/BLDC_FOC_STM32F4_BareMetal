@@ -28,6 +28,11 @@
 #define APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS                          100u
 /* Speed-feedback LPF time constant tau (larger tau => smoother, smaller tau => faster). */
 #define APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS       30u
+/* Speed PI gains use Q15 fixed-point on mrpm input and permyriad output. */
+#define APP_MOTOR_TEST_SPEED_PI_KP_Q15                              1024
+#define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        256
+#define APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD              3000u
+#define APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS                    1u
 #define APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT 50u
 #define APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE                        4095u
 
