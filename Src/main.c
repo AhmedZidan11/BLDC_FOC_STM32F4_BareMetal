@@ -36,10 +36,6 @@
 
 extern usart2_handle_t USART2_H;
 
-typedef struct {
-	uint32_t phase_increment_ramp_step_u32;
-} app_motor_test_derived_cfg_t;
-
 typedef struct app_context_t {
 	motor_handle_t motor_h;
 	motor_3pwm_handle_t motor_3pwm_h;
@@ -51,10 +47,10 @@ typedef struct app_context_t {
 	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
 	as5600_analog_handle_t as5600_analog_h;
 	uint32_t last_angle_log_ms;
-	uint32_t last_openloop_update_ms;
+	uint32_t last_actuation_update_ms;
 	uint32_t last_speed_pi_update_ms;
 	uint32_t alignment_start_ms;
-	int16_t current_foc_uq_permyriad;
+	int16_t applied_uq_command_permyriad;
 	int32_t speed_control_target_mechanical_speed_mrpm;
 	uint64_t latest_logged_timestamp_us;
 	uint16_t latest_logged_mechanical_angle_u16;
@@ -100,36 +96,6 @@ static void app_fatal_stop(app_context_t *app, const char *tag, const char *msg)
 }
 
 /**
- * @brief Build the derived open-loop ramp configuration for the current test.
- *
- * @return Derived motor test values used by the open-loop helper.
- */
-static app_motor_test_derived_cfg_t app_build_motor_test_derived_cfg(void)
-{
-	const uint64_t motor_test_mrpm_per_rpm = 1000ULL;
-	const uint32_t motor_test_ramp_update_count =
-			(uint32_t)((APP_MOTOR_TEST_RAMP_DURATION_MS + APP_MOTOR_TEST_UPDATE_PERIOD_MS - 1u) /
-					  APP_MOTOR_TEST_UPDATE_PERIOD_MS);
-	const uint64_t motor_test_target_phase_increment_num =
-			(uint64_t)APP_MOTOR_TEST_TARGET_MECHANICAL_SPEED_MRPM *
-			(uint64_t)APP_MOTOR_TEST_POLE_PAIRS *
-			(uint64_t)APP_MOTOR_TEST_UPDATE_PERIOD_MS *
-			MOTOR_OPENLOOP_PHASE_ACCUM_FULL_TURN_U32;
-	const uint32_t motor_test_target_phase_increment_u32 =
-			(uint32_t)((motor_test_target_phase_increment_num +
-					   ((MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm) / 2u)) /
-					  (MOTOR_OPENLOOP_MS_PER_MINUTE * motor_test_mrpm_per_rpm));
-	app_motor_test_derived_cfg_t derived_cfg = {0};
-
-	/* Reach the target phase increment in roughly APP_MOTOR_TEST_RAMP_DURATION_MS. */
-	derived_cfg.phase_increment_ramp_step_u32 =
-			(uint32_t)((motor_test_target_phase_increment_u32 + motor_test_ramp_update_count - 1u) /
-					  motor_test_ramp_update_count);
-
-	return derived_cfg;
-}
-
-/**
  * @brief Build the shared motor runtime state for the current test.
  *
  * @return Initialized shared motor runtime container.
@@ -139,7 +105,7 @@ static motor_handle_t app_build_motor_handle(void)
 	motor_handle_t motor_h = {
 			.measurements = {0},
 			.targets = {
-					.target_mechanical_speed_mrpm = APP_MOTOR_TEST_TARGET_MECHANICAL_SPEED_MRPM,
+					.target_mechanical_speed_mrpm = APP_MOTOR_TEST_STARTUP_OPENLOOP_TARGET_MECHANICAL_SPEED_MRPM,
 					.target_amplitude_permyriad = APP_MOTOR_TEST_ALIGNMENT_AMPLITUDE_PERMYRIAD,
 			},
 			.limits = {
@@ -179,13 +145,13 @@ static void app_init_context(app_context_t *app)
 	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
 	app->as5600_analog_h = (as5600_analog_handle_t){0};
 	app->last_angle_log_ms = 0u;
-	app->last_openloop_update_ms = 0u;
+	app->last_actuation_update_ms = 0u;
 	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
-	app->current_foc_uq_permyriad = 0u;
+	app->applied_uq_command_permyriad = 0u;
 	/* Use the dedicated speed-control target for post-alignment closed-loop updates. */
 	app->speed_control_target_mechanical_speed_mrpm =
-			APP_MOTOR_TEST_SPEED_PI_SHADOW_TARGET_MECHANICAL_SPEED_MRPM;
+			APP_MOTOR_TEST_SPEED_CONTROL_TARGET_MECHANICAL_SPEED_MRPM;
 	app->latest_logged_timestamp_us = 0u;
 	app->latest_logged_mechanical_angle_u16 = 0u;
 	app->latest_sample_valid = false;
@@ -232,13 +198,13 @@ static void app_init_modules(app_context_t *app,
 	board_init();
 	log_init(&USART2_H);
 
-	/* Initialize the PWM power stage used by the open-loop path. */
+	/* Initialize the PWM power stage used by startup alignment and runtime FOC. */
 	if (!motor_3pwm_init(&app->motor_3pwm_h, motor_3pwm_cfg))
 	{
 		app_fatal_trap("M3PWM", "init failed");
 	}
 
-	/* Initialize the open-loop helper for the active motor test. */
+	/* Initialize the open-loop helper used only for startup alignment actuation. */
 	if (!motor_openloop_init(&app->motor_openloop_h, motor_openloop_cfg))
 	{
 		app_fatal_trap("MOPEN", "init failed");
@@ -256,13 +222,13 @@ static void app_init_modules(app_context_t *app,
 		app_fatal_trap("MEANG", "init failed");
 	}
 
-	/* Initialize the low-latency speed-feedback path for future control use. */
+	/* Initialize the low-latency speed-feedback path used by active speed control. */
 	if (!motor_speed_feedback_init(&app->motor_speed_feedback_h, motor_speed_feedback_cfg))
 	{
 		app_fatal_trap("MSPD", "init failed");
 	}
 
-	/* Initialize the shadow speed PI controller for safe closed-loop preparation. */
+	/* Initialize the active speed PI controller used by closed-loop runtime updates. */
 	if (!motor_speed_pi_init(&app->motor_speed_pi_h, motor_speed_pi_cfg))
 	{
 		app_fatal_trap("MSPI", "init failed");
@@ -283,7 +249,7 @@ static void app_init_modules(app_context_t *app,
 }
 
 /**
- * @brief Start the powered open-loop motor test from the alignment vector.
+ * @brief Start the powered runtime from the startup alignment vector.
  *
  * @param app Pointer to application runtime context.
  * @param alignment_electrical_angle_u16 Startup electrical angle.
@@ -307,7 +273,7 @@ static void app_start_motor_test(app_context_t *app, uint16_t alignment_electric
 	app->motor_h.status.is_enabled = true;
 	app->alignment_start_ms = SYSTICK_GetTimeMs();
 	app->last_angle_log_ms = app->alignment_start_ms;
-	app->last_openloop_update_ms = app->alignment_start_ms;
+	app->last_actuation_update_ms = app->alignment_start_ms;
 	app->last_speed_pi_update_ms = app->alignment_start_ms;
 }
 
@@ -385,14 +351,14 @@ static void app_update_speed_controller(app_context_t *app,
 }
 
 /**
- * @brief Advance alignment hold and the post-alignment runtime actuation path.
+ * @brief Advance startup alignment and post-alignment closed-loop actuation.
  *
  * @param app Pointer to application runtime context.
- * @param motor_openloop_cfg Pointer to motor open-loop configuration.
+ * @param actuation_update_period_ms Runtime actuation update period in milliseconds.
  * @param now_ms Current time in milliseconds.
  */
 static void app_update_runtime_actuation(app_context_t *app,
-										 const motor_openloop_cfg_t *motor_openloop_cfg,
+										 uint16_t actuation_update_period_ms,
 										 uint32_t now_ms)
 {
 	uint16_t raw_electrical_angle_u16 = 0u;
@@ -444,31 +410,30 @@ static void app_update_runtime_actuation(app_context_t *app,
 			{
 				app_fatal_stop(app, "MSPI", "reset failed");
 			}
-			app->current_foc_uq_permyriad = 0u;
-			app->motor_h.targets.target_amplitude_permyriad = APP_MOTOR_TEST_RUN_AMPLITUDE_PERMYRIAD;
+			app->applied_uq_command_permyriad = 0u;
 			app->alignment_done = true;
-			app->last_openloop_update_ms = now_ms;
+			app->last_actuation_update_ms = now_ms;
 			app->last_speed_pi_update_ms = now_ms;
 		}
 
 		return;
 	}
 
-	/* After alignment, switch from open-loop ramp updates to q-only sensored voltage actuation. */
-	if ((now_ms - app->last_openloop_update_ms) >= motor_openloop_cfg->update_period_ms)
+	/* After alignment, apply q-only sensored voltage actuation with controller-driven Uq. */
+	if ((now_ms - app->last_actuation_update_ms) >= actuation_update_period_ms)
 	{
 		/* Use the current limited speed-controller output as the applied q-axis command. */
-		app->current_foc_uq_permyriad =
-				(int16_t)app->motor_h.speed_pi.shadow_uq_command_permyriad;
+		app->applied_uq_command_permyriad =
+				(int16_t)app->motor_h.speed_pi.speed_control_uq_command_permyriad;
 
 		if (!motor_foc_voltage_apply_dq(&app->motor_foc_voltage_h,
 										0,
-										app->current_foc_uq_permyriad))
+										app->applied_uq_command_permyriad))
 		{
 			app_fatal_stop(app, "MFOC", "apply failed");
 		}
 
-		app->last_openloop_update_ms += motor_openloop_cfg->update_period_ms;
+		app->last_actuation_update_ms += actuation_update_period_ms;
 	}
 }
 
@@ -496,7 +461,7 @@ static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 		speed_target_mechanical_speed_mrpm = app->speed_control_target_mechanical_speed_mrpm;
 		filtered_mechanical_speed_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
 		speed_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;
-		applied_uq_command_permyriad = (int32_t)app->current_foc_uq_permyriad;
+		applied_uq_command_permyriad = (int32_t)app->applied_uq_command_permyriad;
 
 		printf("S,%lu,%u,%ld,%ld,%ld,%ld\r\n",
 			   (unsigned long)app->latest_logged_timestamp_us,
@@ -511,7 +476,6 @@ static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
 
 int main(void)
 {
-	const app_motor_test_derived_cfg_t derived_cfg = app_build_motor_test_derived_cfg();
 	app_context_t app = {0};
 	const uint32_t speed_feedback_sample_period_us =
 			APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US *
@@ -523,7 +487,7 @@ int main(void)
 			.motor_h = &app.motor_h,
 			.motor_3pwm_h = &app.motor_3pwm_h,
 			.update_period_ms = APP_MOTOR_TEST_UPDATE_PERIOD_MS,
-			.phase_increment_ramp_step_u32 = derived_cfg.phase_increment_ramp_step_u32,
+			.phase_increment_ramp_step_u32 = APP_MOTOR_TEST_STARTUP_OPENLOOP_PHASE_INCREMENT_RAMP_STEP_U32,
 	};
 	const motor_foc_voltage_cfg_t motor_foc_voltage_cfg = {
 			.motor_h = &app.motor_h,
@@ -598,7 +562,7 @@ int main(void)
 
 		/* Advance alignment and apply q-only FOC actuation with controller-driven Uq. */
 		app_update_runtime_actuation(&app,
-									 &motor_openloop_cfg,
+									 APP_MOTOR_TEST_UPDATE_PERIOD_MS,
 									 now_ms);
 
 		/* Emit the reduced-rate UART log line. */

@@ -14,7 +14,7 @@
  * - compute wrap-safe angle delta between adjacent samples
  * - convert delta and fixed dt into raw signed mechanical speed
  * - apply a first-order low-pass filter with time-constant tuning
- * - publish filtered speed for future control use
+ * - publish filtered speed for the active speed-control path
  *
  * @note Mechanical angle uses full-turn uint16 units.
  * @note Mechanical speed uses signed milli-rpm units.

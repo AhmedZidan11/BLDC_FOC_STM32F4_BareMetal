@@ -1,6 +1,6 @@
 /**
  * @file motor_speed_pi.c
- * @brief Shadow-mode digital PI controller for mechanical speed.
+ * @brief Digital PI controller for mechanical speed.
  *
  */
 
@@ -77,7 +77,7 @@ bool motor_speed_pi_init(motor_speed_pi_handle_t *motor_speed_pi_h,
 
 	motor_h->speed_pi.speed_error_mrpm = 0;
 	motor_h->speed_pi.integrator_term_permyriad = 0;
-	motor_h->speed_pi.shadow_uq_command_permyriad = 0;
+	motor_h->speed_pi.speed_control_uq_command_permyriad = 0;
 
 	return true;
 }
@@ -88,11 +88,11 @@ bool motor_speed_pi_reset(motor_speed_pi_handle_t *motor_speed_pi_h)
 	if ((motor_speed_pi_h->cfg == NULL) || (motor_speed_pi_h->motor_h == NULL)) return false;
 	if (motor_speed_pi_h->is_initialized == false) return false;
 
-	/* Reset the PI runtime state and published shadow output. */
+	/* Reset the PI runtime state and published control command. */
 	motor_speed_pi_h->integrator_term_permyriad = 0;
 	motor_speed_pi_h->motor_h->speed_pi.speed_error_mrpm = 0;
 	motor_speed_pi_h->motor_h->speed_pi.integrator_term_permyriad = 0;
-	motor_speed_pi_h->motor_h->speed_pi.shadow_uq_command_permyriad = 0;
+	motor_speed_pi_h->motor_h->speed_pi.speed_control_uq_command_permyriad = 0;
 
 	return true;
 }
@@ -134,14 +134,14 @@ bool motor_speed_pi_update(motor_speed_pi_handle_t *motor_speed_pi_h,
 	/* Keep integrator clamping separate from final output clamping for clean anti-windup state. */
 	int32_t clamped_integrator_permyriad =
 			motor_speed_pi_clamp_i32(integrator_candidate_permyriad, -output_limit, output_limit);
-	int32_t shadow_uq_command_permyriad =
+	int32_t speed_control_uq_command_permyriad =
 			motor_speed_pi_clamp_i32(output_candidate_permyriad, -output_limit, output_limit);
 
-	/* Publish the shadow PI state for observation without driving actuation. */
+	/* Publish the PI state and the limited speed-control q-axis command. */
 	motor_speed_pi_h->integrator_term_permyriad = clamped_integrator_permyriad;
 	motor_h->speed_pi.speed_error_mrpm = speed_error_mrpm;
 	motor_h->speed_pi.integrator_term_permyriad = clamped_integrator_permyriad;
-	motor_h->speed_pi.shadow_uq_command_permyriad = shadow_uq_command_permyriad;
+	motor_h->speed_pi.speed_control_uq_command_permyriad = speed_control_uq_command_permyriad;
 
 	return true;
 }

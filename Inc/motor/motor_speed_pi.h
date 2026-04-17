@@ -3,17 +3,16 @@
 
 /**
  * @file motor_speed_pi.h
- * @brief Shadow-mode digital PI controller for mechanical speed.
+ * @brief Digital PI controller for mechanical speed.
  *
- * This module computes a candidate q-axis command from target and measured
- * mechanical speed. It is meant for safe shadow-mode validation before
- * closing the speed loop.
+ * This module computes the active q-axis command from target and measured
+ * mechanical speed in the closed-loop speed-control path.
  *
  * Responsibilities:
  * - store PI configuration and runtime state
  * - compute one discrete PI update at fixed cadence
  * - apply output saturation and simple anti-windup
- * - publish one shadow q-axis command for observation
+ * - publish one speed-control q-axis command
  *
  * @note Speed uses signed milli-rpm units.
  * @note q-axis command uses signed permyriad units.
@@ -58,7 +57,7 @@ bool motor_speed_pi_init(motor_speed_pi_handle_t *motor_speed_pi_h,
 						 const motor_speed_pi_cfg_t *motor_speed_pi_cfg);
 
 /**
- * @brief Reset speed PI integrator and shadow output state.
+ * @brief Reset speed PI integrator and output state.
  *
  * @param motor_speed_pi_h Pointer to speed PI handle.
  * @return true if reset succeeded, false otherwise.
@@ -66,7 +65,7 @@ bool motor_speed_pi_init(motor_speed_pi_handle_t *motor_speed_pi_h,
 bool motor_speed_pi_reset(motor_speed_pi_handle_t *motor_speed_pi_h);
 
 /**
- * @brief Run one discrete speed PI update in shadow mode.
+ * @brief Run one discrete speed PI update.
  *
  * @param motor_speed_pi_h Pointer to speed PI handle.
  * @param target_mechanical_speed_mrpm Target mechanical speed in mrpm.

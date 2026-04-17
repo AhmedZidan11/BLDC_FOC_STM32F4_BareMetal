@@ -6,13 +6,13 @@
  * @brief Shared motor-domain data model.
  *
  * This header collects shared motor-domain types that can be used by motor
- * observation and open-loop helper modules.
+ * startup-alignment and closed-loop helper modules.
  *
  * Responsibilities:
  * - define shared motor measurements
  * - define shared motor targets and limits
  * - define shared motor status flags
- * - define shared runtime state for open-loop and speed-estimation helpers
+ * - define shared runtime state for startup open-loop and speed-control helpers
  *
  * @note Mechanical and electrical angles use full-turn uint16 units.
  * @note Mechanical speed uses signed milli-rpm units for measurements,
@@ -43,7 +43,7 @@ typedef enum {
  */
 typedef struct {
 	uint16_t mechanical_angle_u16;
-	uint16_t electrical_angle_u16; /* Measured electrical angle for future sensored control. */
+	uint16_t electrical_angle_u16; /* Measured electrical angle for active sensored control. */
 	int32_t measured_mechanical_speed_mrpm;
 } motor_measurements_t;
 
@@ -100,13 +100,13 @@ typedef struct {
 } motor_speed_feedback_state_t;
 
 /**
- * @brief Shadow-mode speed PI runtime state.
+ * @brief Closed-loop speed PI runtime state.
  *
  */
 typedef struct {
 	int32_t speed_error_mrpm;
 	int32_t integrator_term_permyriad;
-	int32_t shadow_uq_command_permyriad;
+	int32_t speed_control_uq_command_permyriad;
 } motor_speed_pi_state_t;
 
 /**
