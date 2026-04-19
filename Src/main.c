@@ -38,6 +38,14 @@ extern usart2_handle_t USART2_H;
 
 #define APP_FAULT_REASON_SPEED_ERROR_ABS_LIMIT    1u
 
+typedef enum app_speed_profile_phase_t {
+	APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START = 0,
+	APP_SPEED_PROFILE_PHASE_RAMP_UP,
+	APP_SPEED_PROFILE_PHASE_PEAK_HOLD,
+	APP_SPEED_PROFILE_PHASE_RAMP_DOWN,
+	APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END,
+} app_speed_profile_phase_t;
+
 typedef struct app_context_t {
 	motor_handle_t motor_h;
 	motor_3pwm_handle_t motor_3pwm_h;
@@ -55,6 +63,8 @@ typedef struct app_context_t {
 	int16_t applied_uq_command_permyriad;
 	int32_t speed_control_target_mechanical_speed_mrpm;
 	int32_t current_speed_control_reference_mrpm;
+	app_speed_profile_phase_t speed_profile_phase;
+	uint32_t speed_profile_phase_start_ms;
 	uint16_t latest_logged_mechanical_angle_u16;
 	bool latest_sample_valid;
 	bool alignment_done;
@@ -151,10 +161,12 @@ static void app_init_context(app_context_t *app)
 	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
 	app->applied_uq_command_permyriad = 0u;
-	/* Use the dedicated speed-control target for post-alignment closed-loop updates. */
+	/* Keep final target field as the profile peak for telemetry and fault arming semantics. */
 	app->speed_control_target_mechanical_speed_mrpm =
-			APP_MOTOR_TEST_SPEED_CONTROL_TARGET_MECHANICAL_SPEED_MRPM;
+			APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
 	app->current_speed_control_reference_mrpm = 0;
+	app->speed_profile_phase = APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START;
+	app->speed_profile_phase_start_ms = 0u;
 	app->latest_logged_mechanical_angle_u16 = 0u;
 	app->latest_sample_valid = false;
 	app->alignment_done = false;
@@ -174,6 +186,198 @@ static int32_t app_abs_i32(int32_t value)
 	}
 
 	return value;
+}
+
+/**
+ * @brief Return ramp duration for the profile slope in milliseconds.
+ *
+ * @return Ramp duration in milliseconds.
+ */
+static uint32_t app_speed_profile_ramp_duration_ms(void)
+{
+	int64_t ramp_duration_num = 0;
+	uint32_t ramp_duration_ms = 1u;
+
+	/* ramp_ms = peak_mrpm * 1000 / accel_mrpm_per_s, rounded up. */
+	ramp_duration_num =
+			(int64_t)APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM * 1000LL;
+	ramp_duration_ms =
+			(uint32_t)((ramp_duration_num +
+						(int64_t)APP_MOTOR_TEST_SPEED_PROFILE_ACCELERATION_MRPM_PER_S - 1LL) /
+					   (int64_t)APP_MOTOR_TEST_SPEED_PROFILE_ACCELERATION_MRPM_PER_S);
+	if (ramp_duration_ms < 1u)
+	{
+		ramp_duration_ms = 1u;
+	}
+
+	return ramp_duration_ms;
+}
+
+/**
+ * @brief Return one profile phase duration in milliseconds.
+ *
+ * @param phase Profile phase.
+ * @return Phase duration in milliseconds.
+ */
+static uint32_t app_speed_profile_phase_duration_ms(app_speed_profile_phase_t phase)
+{
+	if (phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START)
+	{
+		return APP_MOTOR_TEST_SPEED_PROFILE_ZERO_HOLD_MS;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP)
+	{
+		return app_speed_profile_ramp_duration_ms();
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD)
+	{
+		return APP_MOTOR_TEST_SPEED_PROFILE_PEAK_HOLD_MS;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN)
+	{
+		return app_speed_profile_ramp_duration_ms();
+	}
+
+	return APP_MOTOR_TEST_SPEED_PROFILE_ZERO_HOLD_MS;
+}
+
+/**
+ * @brief Return one phase-local speed reference for elapsed phase time.
+ *
+ * @param phase Profile phase.
+ * @param elapsed_phase_ms Elapsed time inside the active phase.
+ * @return Profile speed reference in mrpm.
+ */
+static int32_t app_speed_profile_phase_reference_mrpm(app_speed_profile_phase_t phase,
+													   uint32_t elapsed_phase_ms)
+{
+	int64_t ramp_delta_num = 0;
+	int32_t ramp_delta_mrpm = 0;
+	int32_t peak_mrpm = APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
+
+	if ((phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START) ||
+		(phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END))
+	{
+		return 0;
+	}
+
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD)
+	{
+		return peak_mrpm;
+	}
+
+	/* ramp_delta_mrpm = accel_mrpm_per_s * elapsed_ms / 1000. */
+	ramp_delta_num =
+			(int64_t)APP_MOTOR_TEST_SPEED_PROFILE_ACCELERATION_MRPM_PER_S *
+			(int64_t)elapsed_phase_ms;
+	ramp_delta_mrpm = (int32_t)(ramp_delta_num / 1000LL);
+
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP)
+	{
+		if (ramp_delta_mrpm > peak_mrpm)
+		{
+			ramp_delta_mrpm = peak_mrpm;
+		}
+		return ramp_delta_mrpm;
+	}
+
+	if (ramp_delta_mrpm > peak_mrpm)
+	{
+		ramp_delta_mrpm = peak_mrpm;
+	}
+	return peak_mrpm - ramp_delta_mrpm;
+}
+
+/**
+ * @brief Return the active profile phase target for telemetry.
+ *
+ * @param phase Profile phase.
+ * @return Phase target in mrpm.
+ */
+static int32_t app_speed_profile_phase_target_mrpm(app_speed_profile_phase_t phase)
+{
+	if ((phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START) ||
+		(phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END))
+	{
+		return 0;
+	}
+
+	return APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
+}
+
+/**
+ * @brief Advance one profile phase in cyclic order.
+ *
+ * @param phase Current profile phase.
+ * @return Next profile phase.
+ */
+static app_speed_profile_phase_t app_speed_profile_next_phase(app_speed_profile_phase_t phase)
+{
+	if (phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START)
+	{
+		return APP_SPEED_PROFILE_PHASE_RAMP_UP;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP)
+	{
+		return APP_SPEED_PROFILE_PHASE_PEAK_HOLD;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD)
+	{
+		return APP_SPEED_PROFILE_PHASE_RAMP_DOWN;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN)
+	{
+		return APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END;
+	}
+
+	return APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START;
+}
+
+/**
+ * @brief Reset the unidirectional tuning profile at one runtime timestamp.
+ *
+ * @param app Pointer to application runtime context.
+ * @param now_ms Current time in milliseconds.
+ */
+static void app_speed_profile_reset(app_context_t *app, uint32_t now_ms)
+{
+	if (app == NULL) return;
+
+	app->speed_profile_phase = APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START;
+	app->speed_profile_phase_start_ms = now_ms;
+	app->current_speed_control_reference_mrpm = 0;
+}
+
+/**
+ * @brief Update the unidirectional trapezoidal speed profile state.
+ *
+ * @param app Pointer to application runtime context.
+ * @param now_ms Current time in milliseconds.
+ */
+static void app_speed_profile_update(app_context_t *app, uint32_t now_ms)
+{
+	uint32_t phase_duration_ms = 0u;
+	uint32_t elapsed_phase_ms = 0u;
+
+	if (app == NULL) return;
+
+	/* Advance phase timing before evaluating the current phase reference. */
+	while (1)
+	{
+		phase_duration_ms = app_speed_profile_phase_duration_ms(app->speed_profile_phase);
+		elapsed_phase_ms = now_ms - app->speed_profile_phase_start_ms;
+		if (elapsed_phase_ms < phase_duration_ms)
+		{
+			break;
+		}
+
+		app->speed_profile_phase_start_ms += phase_duration_ms;
+		app->speed_profile_phase = app_speed_profile_next_phase(app->speed_profile_phase);
+	}
+
+	elapsed_phase_ms = now_ms - app->speed_profile_phase_start_ms;
+	app->current_speed_control_reference_mrpm =
+			app_speed_profile_phase_reference_mrpm(app->speed_profile_phase, elapsed_phase_ms);
 }
 
 /**
@@ -396,10 +600,6 @@ static void app_update_speed_controller(app_context_t *app,
 										uint16_t speed_pi_update_period_ms,
 										uint32_t now_ms)
 {
-	int32_t speed_reference_error_mrpm = 0;
-	int64_t max_speed_reference_step_num_mrpm = 0;
-	int32_t max_speed_reference_step_mrpm = 0;
-
 	if ((app->alignment_done == false) ||
 		(app->motor_h.status.has_valid_mechanical_speed == false))
 	{
@@ -410,36 +610,10 @@ static void app_update_speed_controller(app_context_t *app,
 	/* Update closed-loop speed control in P-only mode (Ki=0 by config). */
 	if ((now_ms - app->last_speed_pi_update_ms) >= speed_pi_update_period_ms)
 	{
-		/* max_step = accel_mrpm_per_s * dt_ms / 1000, rounded up to keep forward progress. */
-		max_speed_reference_step_num_mrpm =
-				(int64_t)APP_MOTOR_TEST_SPEED_CONTROL_ACCELERATION_MRPM_PER_S *
-				(int64_t)speed_pi_update_period_ms;
-		max_speed_reference_step_mrpm =
-				(int32_t)((max_speed_reference_step_num_mrpm + 999LL) / 1000LL);
-		if (max_speed_reference_step_mrpm < 1)
-		{
-			max_speed_reference_step_mrpm = 1;
-		}
+		/* First tuning profile: unidirectional trapezoid 0 -> peak -> 0, then repeat. */
+		app_speed_profile_update(app, now_ms);
 
-		/* Move the active speed reference toward the final target with a bounded step. */
-		speed_reference_error_mrpm =
-				app->speed_control_target_mechanical_speed_mrpm -
-				app->current_speed_control_reference_mrpm;
-		if (speed_reference_error_mrpm > max_speed_reference_step_mrpm)
-		{
-			app->current_speed_control_reference_mrpm += max_speed_reference_step_mrpm;
-		}
-		else if (speed_reference_error_mrpm < -max_speed_reference_step_mrpm)
-		{
-			app->current_speed_control_reference_mrpm -= max_speed_reference_step_mrpm;
-		}
-		else
-		{
-			app->current_speed_control_reference_mrpm =
-					app->speed_control_target_mechanical_speed_mrpm;
-		}
-
-		/* Use the acceleration-limited speed reference for the active PI update. */
+		/* Use the current profile reference for the active PI update. */
 		if (!motor_speed_pi_update(&app->motor_speed_pi_h,
 								   app->current_speed_control_reference_mrpm,
 								   app->motor_h.measurements.measured_mechanical_speed_mrpm))
@@ -504,8 +678,8 @@ static void app_update_runtime_actuation(app_context_t *app,
 			{
 				app_fatal_stop(app, "MSPI", "reset failed");
 			}
-			/* Start closed-loop speed reference from zero and ramp it after alignment. */
-			app->current_speed_control_reference_mrpm = 0;
+			/* Start the unidirectional tuning profile from the first zero-hold phase. */
+			app_speed_profile_reset(app, now_ms);
 			app->applied_uq_command_permyriad = 0u;
 			app->alignment_done = true;
 			app->last_actuation_update_ms = now_ms;
@@ -541,6 +715,9 @@ static void app_update_runtime_actuation(app_context_t *app,
  * velocity_target_final_mrpm,velocity_reference_mrpm,
  * velocity_error_mrpm,uq_command_permyriad
  *
+ * velocity_target_final_mrpm reports the current profile phase target.
+ * velocity_reference_mrpm reports the instantaneous reference fed to the controller.
+ *
  * @param app Pointer to application runtime context.
  * @param now_ms Current time in milliseconds.
  */
@@ -559,7 +736,8 @@ static void app_emit_telemetry(app_context_t *app, uint32_t now_ms)
 	/* Build one compact S-line with current control and telemetry state. */
 	mechanical_angle_deg_x10 =
 			app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
-	velocity_target_final_mrpm = app->speed_control_target_mechanical_speed_mrpm;
+	/* Report phase target and instantaneous controller reference separately for clarity. */
+	velocity_target_final_mrpm = app_speed_profile_phase_target_mrpm(app->speed_profile_phase);
 	velocity_reference_mrpm = app->current_speed_control_reference_mrpm;
 	velocity_filtered_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
 	velocity_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;

@@ -25,8 +25,8 @@
 #define APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16               0u
 #define APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US                   100u
 #define APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT               5u
-/* Lightweight UART telemetry output interval for normal runtime logging. */
-#define APP_MOTOR_TEST_TELEMETRY_PERIOD_MS                          100u
+/* Lightweight UART telemetry output interval for runtime tuning logs. */
+#define APP_MOTOR_TEST_TELEMETRY_PERIOD_MS                          20u
 #define APP_MOTOR_TEST_ANGLE_FULL_TURN_COUNTS                       65536u
 /* Half-turn threshold used for one wrap correction in corrected-delta conversion. */
 #define APP_MOTOR_TEST_ANGLE_HALF_TURN_COUNTS                       (APP_MOTOR_TEST_ANGLE_FULL_TURN_COUNTS / 2u)
@@ -41,10 +41,11 @@
 #define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        0
 #define APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD              6000u
 #define APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS                    1u
-/* Closed-loop speed target kept near runtime speed scale for stable P-only validation. */
-#define APP_MOTOR_TEST_SPEED_CONTROL_TARGET_MECHANICAL_SPEED_MRPM   500000
-/* Simple acceleration limit for speed-reference ramp (not a full motion profile). */
-#define APP_MOTOR_TEST_SPEED_CONTROL_ACCELERATION_MRPM_PER_S        600000
+/* First tuning profile: unidirectional trapezoid 0 -> peak -> 0 (repeat). */
+#define APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM     300000
+#define APP_MOTOR_TEST_SPEED_PROFILE_ACCELERATION_MRPM_PER_S        300000
+#define APP_MOTOR_TEST_SPEED_PROFILE_ZERO_HOLD_MS                   500u
+#define APP_MOTOR_TEST_SPEED_PROFILE_PEAK_HOLD_MS                   1000u
 #define APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT 50u
 #define APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE                        4095u
 
