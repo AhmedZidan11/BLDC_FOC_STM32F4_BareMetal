@@ -25,17 +25,26 @@
 #define APP_MOTOR_TEST_ALIGNMENT_ELECTRICAL_ANGLE_U16               0u
 #define APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US                   100u
 #define APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT               5u
-#define APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS                          100u
+/* Lightweight UART telemetry output interval for normal runtime logging. */
+#define APP_MOTOR_TEST_TELEMETRY_PERIOD_MS                          100u
+#define APP_MOTOR_TEST_ANGLE_FULL_TURN_COUNTS                       65536u
+/* Half-turn threshold used for one wrap correction in corrected-delta conversion. */
+#define APP_MOTOR_TEST_ANGLE_HALF_TURN_COUNTS                       (APP_MOTOR_TEST_ANGLE_FULL_TURN_COUNTS / 2u)
+/* Maximum plausible mechanical step per 500 us publish interval (~8 mechanical degrees). */
+#define APP_MOTOR_TEST_ANGLE_MAX_PLAUSIBLE_DELTA_PER_PUBLISH_COUNTS ((APP_MOTOR_TEST_ANGLE_FULL_TURN_COUNTS * 8u) / 360u)
+#define APP_MOTOR_TEST_FAULT_TRIGGER_ABS_SPEED_ERROR_MRPM          100000
 /* Speed-feedback LPF time constant tau (larger tau => smoother, smaller tau => faster). */
 #define APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS       30u
 /* Speed PI gains use Q15 fixed-point on mrpm input and permyriad output. */
-#define APP_MOTOR_TEST_SPEED_PI_KP_Q15                              1024
+#define APP_MOTOR_TEST_SPEED_PI_KP_Q15                              2048
 /* Ki is zero temporarily so the first closed-loop test runs in P-only mode. */
 #define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        0
-#define APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD              3000u
+#define APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD              6000u
 #define APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS                    1u
 /* Closed-loop speed target kept near runtime speed scale for stable P-only validation. */
-#define APP_MOTOR_TEST_SPEED_CONTROL_TARGET_MECHANICAL_SPEED_MRPM   200000
+#define APP_MOTOR_TEST_SPEED_CONTROL_TARGET_MECHANICAL_SPEED_MRPM   500000
+/* Simple acceleration limit for speed-reference ramp (not a full motion profile). */
+#define APP_MOTOR_TEST_SPEED_CONTROL_ACCELERATION_MRPM_PER_S        600000
 #define APP_MOTOR_TEST_SPEED_REFERENCE_ESTIMATOR_HISTORY_SAMPLE_COUNT 50u
 #define APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE                        4095u
 

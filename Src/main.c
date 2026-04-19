@@ -36,6 +36,8 @@
 
 extern usart2_handle_t USART2_H;
 
+#define APP_FAULT_REASON_SPEED_ERROR_ABS_LIMIT    1u
+
 typedef struct app_context_t {
 	motor_handle_t motor_h;
 	motor_3pwm_handle_t motor_3pwm_h;
@@ -46,13 +48,13 @@ typedef struct app_context_t {
 	motor_speed_pi_handle_t motor_speed_pi_h;
 	motor_speed_reference_estimator_handle_t motor_speed_reference_estimator_h;
 	as5600_analog_handle_t as5600_analog_h;
-	uint32_t last_angle_log_ms;
+	uint32_t last_telemetry_ms;
 	uint32_t last_actuation_update_ms;
 	uint32_t last_speed_pi_update_ms;
 	uint32_t alignment_start_ms;
 	int16_t applied_uq_command_permyriad;
 	int32_t speed_control_target_mechanical_speed_mrpm;
-	uint64_t latest_logged_timestamp_us;
+	int32_t current_speed_control_reference_mrpm;
 	uint16_t latest_logged_mechanical_angle_u16;
 	bool latest_sample_valid;
 	bool alignment_done;
@@ -144,7 +146,7 @@ static void app_init_context(app_context_t *app)
 	app->motor_speed_pi_h = (motor_speed_pi_handle_t){0};
 	app->motor_speed_reference_estimator_h = (motor_speed_reference_estimator_handle_t){0};
 	app->as5600_analog_h = (as5600_analog_handle_t){0};
-	app->last_angle_log_ms = 0u;
+	app->last_telemetry_ms = 0u;
 	app->last_actuation_update_ms = 0u;
 	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
@@ -152,23 +154,67 @@ static void app_init_context(app_context_t *app)
 	/* Use the dedicated speed-control target for post-alignment closed-loop updates. */
 	app->speed_control_target_mechanical_speed_mrpm =
 			APP_MOTOR_TEST_SPEED_CONTROL_TARGET_MECHANICAL_SPEED_MRPM;
-	app->latest_logged_timestamp_us = 0u;
+	app->current_speed_control_reference_mrpm = 0;
 	app->latest_logged_mechanical_angle_u16 = 0u;
 	app->latest_sample_valid = false;
 	app->alignment_done = false;
 }
 
 /**
- * @brief Convert one full-turn uint16 angle into degrees x10 for debug logs.
+ * @brief Return absolute value of one signed 32-bit value.
  *
- * @param angle_u16 Angle in full-turn uint16 units.
- * @return Angle in tenths of degree.
+ * @param value Signed value.
+ * @return Absolute value.
  */
-static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
+static int32_t app_abs_i32(int32_t value)
 {
-	/* deg_x10 = angle_u16 * 3600 / 65536, rounded to nearest. */
-	uint32_t deg_x10_num = ((uint32_t)angle_u16 * 3600u) + 32768u;
-	return (uint16_t)(deg_x10_num / 65536u);
+	if (value < 0)
+	{
+		return -value;
+	}
+
+	return value;
+}
+
+/**
+ * @brief Check if the runtime speed-error fault trigger is armed.
+ *
+ * @param app Pointer to application runtime context.
+ * @return true if speed-error fault checks are active, false otherwise.
+ */
+static bool app_speed_error_fault_is_armed(const app_context_t *app)
+{
+	if (app == NULL) return false;
+	if (app->alignment_done == false) return false;
+	if (app->motor_h.status.has_valid_mechanical_speed == false) return false;
+	if (app->current_speed_control_reference_mrpm !=
+		app->speed_control_target_mechanical_speed_mrpm) return false;
+
+	return true;
+}
+
+/**
+ * @brief Stop runtime on large steady-state speed error.
+ *
+ * @param app Pointer to application runtime context.
+ * @param now_ms Current runtime timestamp in milliseconds.
+ */
+static void app_check_speed_error_fault(app_context_t *app, uint32_t now_ms)
+{
+	int32_t speed_error_mrpm = 0;
+
+	if (app == NULL) return;
+	if (app_speed_error_fault_is_armed(app) == false) return;
+
+	/* Keep the existing speed-error protection limit with one short UART fault line. */
+	speed_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;
+	if (app_abs_i32(speed_error_mrpm) > APP_MOTOR_TEST_FAULT_TRIGGER_ABS_SPEED_ERROR_MRPM)
+	{
+		printf("fault,%lu,%u\n",
+			   (unsigned long)now_ms,
+			   (unsigned)APP_FAULT_REASON_SPEED_ERROR_ABS_LIMIT);
+		app_fatal_stop(app, "CTRL", "speed error limit");
+	}
 }
 
 /**
@@ -272,7 +318,7 @@ static void app_start_motor_test(app_context_t *app, uint16_t alignment_electric
 	gpio_write(MOTOR_EN.pin, true);
 	app->motor_h.status.is_enabled = true;
 	app->alignment_start_ms = SYSTICK_GetTimeMs();
-	app->last_angle_log_ms = app->alignment_start_ms;
+	app->last_telemetry_ms = app->alignment_start_ms;
 	app->last_actuation_update_ms = app->alignment_start_ms;
 	app->last_speed_pi_update_ms = app->alignment_start_ms;
 }
@@ -281,41 +327,62 @@ static void app_start_motor_test(app_context_t *app, uint16_t alignment_electric
  * @brief Update the application state from one consumed AS5600 angle sample.
  *
  * @param app Pointer to application runtime context.
- * @param mechanical_angle_u16 Published mechanical angle sample.
- * @param sample_timestamp_us Current sample-consume timestamp.
+ * @param published_sample Published AS5600 sample.
+ * @param sample_consume_timestamp_us Current sample-consume timestamp.
  */
 static void app_handle_consumed_angle_sample(app_context_t *app,
-											 uint16_t mechanical_angle_u16,
-											 uint64_t sample_timestamp_us)
+											 const as5600_analog_published_sample_t *published_sample,
+											 uint64_t sample_consume_timestamp_us)
 {
+	uint16_t current_angle_u16 = 0u;
+
+	if (published_sample == NULL)
+	{
+		app_fatal_stop(app, "AS5600", "sample null");
+	}
+
+	current_angle_u16 = published_sample->mechanical_angle_u16;
+
 	/* Publish the latest sensor angle into the shared motor state. */
-	app->motor_h.measurements.mechanical_angle_u16 = mechanical_angle_u16;
+	app->motor_h.measurements.mechanical_angle_u16 = current_angle_u16;
 	app->motor_h.status.has_valid_mechanical_angle = true;
 
 	/* Convert the measured mechanical angle into measured electrical angle. */
-	if (!motor_electrical_angle_update(&app->motor_electrical_angle_h, mechanical_angle_u16))
+	if (!motor_electrical_angle_update(&app->motor_electrical_angle_h, current_angle_u16))
 	{
 		app_fatal_stop(app, "MEANG", "update failed");
 	}
 
 	/* Feed the reference estimator with the current sample-consume timestamp. */
 	if (!motor_speed_reference_estimator_update(&app->motor_speed_reference_estimator_h,
-												mechanical_angle_u16,
-												sample_timestamp_us))
+												current_angle_u16,
+												sample_consume_timestamp_us))
 	{
 		app_fatal_stop(app, "MEST", "update failed");
 	}
 
 	/* Update the low-latency speed feedback using fixed publish cadence. */
-	if (!motor_speed_feedback_update(&app->motor_speed_feedback_h, mechanical_angle_u16))
+	if (!motor_speed_feedback_update(&app->motor_speed_feedback_h, current_angle_u16))
 	{
 		app_fatal_stop(app, "MSPD", "update failed");
 	}
 
-	/* Keep the latest consumed sample for the reduced-rate UART log stream. */
-	app->latest_logged_timestamp_us = sample_timestamp_us;
-	app->latest_logged_mechanical_angle_u16 = mechanical_angle_u16;
+	/* Keep the latest consumed sample for alignment and periodic telemetry. */
+	app->latest_logged_mechanical_angle_u16 = current_angle_u16;
 	app->latest_sample_valid = true;
+}
+
+/**
+ * @brief Convert one full-turn uint16 angle into degrees x10 for telemetry.
+ *
+ * @param angle_u16 Angle in full-turn uint16 units.
+ * @return Angle in tenths of degree.
+ */
+static uint16_t app_angle_u16_to_deg_x10(uint16_t angle_u16)
+{
+	/* deg_x10 = angle_u16 * 3600 / 65536, rounded to nearest. */
+	uint32_t deg_x10_num = ((uint32_t)angle_u16 * 3600u) + 32768u;
+	return (uint16_t)(deg_x10_num / 65536u);
 }
 
 /**
@@ -329,6 +396,10 @@ static void app_update_speed_controller(app_context_t *app,
 										uint16_t speed_pi_update_period_ms,
 										uint32_t now_ms)
 {
+	int32_t speed_reference_error_mrpm = 0;
+	int64_t max_speed_reference_step_num_mrpm = 0;
+	int32_t max_speed_reference_step_mrpm = 0;
+
 	if ((app->alignment_done == false) ||
 		(app->motor_h.status.has_valid_mechanical_speed == false))
 	{
@@ -336,11 +407,41 @@ static void app_update_speed_controller(app_context_t *app,
 		return;
 	}
 
-	/* Update controller output in P-only mode (Ki=0 by config for this first loop-closure test). */
+	/* Update closed-loop speed control in P-only mode (Ki=0 by config). */
 	if ((now_ms - app->last_speed_pi_update_ms) >= speed_pi_update_period_ms)
 	{
+		/* max_step = accel_mrpm_per_s * dt_ms / 1000, rounded up to keep forward progress. */
+		max_speed_reference_step_num_mrpm =
+				(int64_t)APP_MOTOR_TEST_SPEED_CONTROL_ACCELERATION_MRPM_PER_S *
+				(int64_t)speed_pi_update_period_ms;
+		max_speed_reference_step_mrpm =
+				(int32_t)((max_speed_reference_step_num_mrpm + 999LL) / 1000LL);
+		if (max_speed_reference_step_mrpm < 1)
+		{
+			max_speed_reference_step_mrpm = 1;
+		}
+
+		/* Move the active speed reference toward the final target with a bounded step. */
+		speed_reference_error_mrpm =
+				app->speed_control_target_mechanical_speed_mrpm -
+				app->current_speed_control_reference_mrpm;
+		if (speed_reference_error_mrpm > max_speed_reference_step_mrpm)
+		{
+			app->current_speed_control_reference_mrpm += max_speed_reference_step_mrpm;
+		}
+		else if (speed_reference_error_mrpm < -max_speed_reference_step_mrpm)
+		{
+			app->current_speed_control_reference_mrpm -= max_speed_reference_step_mrpm;
+		}
+		else
+		{
+			app->current_speed_control_reference_mrpm =
+					app->speed_control_target_mechanical_speed_mrpm;
+		}
+
+		/* Use the acceleration-limited speed reference for the active PI update. */
 		if (!motor_speed_pi_update(&app->motor_speed_pi_h,
-								   app->speed_control_target_mechanical_speed_mrpm,
+								   app->current_speed_control_reference_mrpm,
 								   app->motor_h.measurements.measured_mechanical_speed_mrpm))
 		{
 			app_fatal_stop(app, "MSPI", "update failed");
@@ -398,18 +499,13 @@ static void app_update_runtime_actuation(app_context_t *app,
 				app_fatal_stop(app, "MEANG", "aligned update failed");
 			}
 
-			/* Emit one machine-friendly alignment capture record. */
-			printf("A,%lu,%u,%u,%u\r\n",
-				   (unsigned long)app->latest_logged_timestamp_us,
-				   (unsigned)app->latest_logged_mechanical_angle_u16,
-				   (unsigned)raw_electrical_angle_u16,
-				   (unsigned)electrical_offset_u16);
-
 			/* Start q-only FOC runtime with zero Uq before first closed-loop update is applied. */
 			if (!motor_speed_pi_reset(&app->motor_speed_pi_h))
 			{
 				app_fatal_stop(app, "MSPI", "reset failed");
 			}
+			/* Start closed-loop speed reference from zero and ramp it after alignment. */
+			app->current_speed_control_reference_mrpm = 0;
 			app->applied_uq_command_permyriad = 0u;
 			app->alignment_done = true;
 			app->last_actuation_update_ms = now_ms;
@@ -438,45 +534,51 @@ static void app_update_runtime_actuation(app_context_t *app,
 }
 
 /**
- * @brief Emit one reduced-rate UART log line from the latest consumed sample.
+ * @brief Emit one compact S-line telemetry record at fixed period.
+ *
+ * S-line fields:
+ * S,timestamp_ms,mechanical_angle_deg_x10,velocity_filtered_mrpm,
+ * velocity_target_final_mrpm,velocity_reference_mrpm,
+ * velocity_error_mrpm,uq_command_permyriad
  *
  * @param app Pointer to application runtime context.
  * @param now_ms Current time in milliseconds.
  */
-static void app_emit_angle_log(app_context_t *app, uint32_t now_ms)
+static void app_emit_telemetry(app_context_t *app, uint32_t now_ms)
 {
 	uint16_t mechanical_angle_deg_x10 = 0u;
-	int32_t speed_target_mechanical_speed_mrpm = 0;
-	int32_t filtered_mechanical_speed_mrpm = 0;
-	int32_t speed_error_mrpm = 0;
-	int32_t applied_uq_command_permyriad = 0;
+	int32_t velocity_target_final_mrpm = 0;
+	int32_t velocity_reference_mrpm = 0;
+	int32_t velocity_filtered_mrpm = 0;
+	int32_t velocity_error_mrpm = 0;
 
-	/* Print the latest consumed sample at the configured lower UART rate. */
-	if (((now_ms - app->last_angle_log_ms) >= APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS) &&
-		(app->latest_sample_valid == true))
-	{
-		/* Convert the latest consumed mechanical angle to tenths of degree. */
-		mechanical_angle_deg_x10 =
-				app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
-		speed_target_mechanical_speed_mrpm = app->speed_control_target_mechanical_speed_mrpm;
-		filtered_mechanical_speed_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
-		speed_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;
-		applied_uq_command_permyriad = (int32_t)app->applied_uq_command_permyriad;
+	if (app == NULL) return;
+	if (app->latest_sample_valid == false) return;
+	if ((now_ms - app->last_telemetry_ms) < APP_MOTOR_TEST_TELEMETRY_PERIOD_MS) return;
 
-		printf("S,%lu,%u,%ld,%ld,%ld,%ld\r\n",
-			   (unsigned long)app->latest_logged_timestamp_us,
-			   (unsigned)mechanical_angle_deg_x10,
-			   (long)filtered_mechanical_speed_mrpm,
-			   (long)speed_target_mechanical_speed_mrpm,
-			   (long)speed_error_mrpm,
-			   (long)applied_uq_command_permyriad);
-		app->last_angle_log_ms += APP_MOTOR_TEST_ANGLE_LOG_PERIOD_MS;
-	}
+	/* Build one compact S-line with current control and telemetry state. */
+	mechanical_angle_deg_x10 =
+			app_angle_u16_to_deg_x10(app->latest_logged_mechanical_angle_u16);
+	velocity_target_final_mrpm = app->speed_control_target_mechanical_speed_mrpm;
+	velocity_reference_mrpm = app->current_speed_control_reference_mrpm;
+	velocity_filtered_mrpm = app->motor_h.speed_feedback.filtered_mechanical_speed_mrpm;
+	velocity_error_mrpm = app->motor_h.speed_pi.speed_error_mrpm;
+
+	printf("S,%lu,%u,%ld,%ld,%ld,%ld,%ld\n",
+		   (unsigned long)now_ms,
+		   (unsigned)mechanical_angle_deg_x10,
+		   (long)velocity_filtered_mrpm,
+		   (long)velocity_target_final_mrpm,
+		   (long)velocity_reference_mrpm,
+		   (long)velocity_error_mrpm,
+		   (long)app->applied_uq_command_permyriad);
+	app->last_telemetry_ms += APP_MOTOR_TEST_TELEMETRY_PERIOD_MS;
 }
 
 int main(void)
 {
 	app_context_t app = {0};
+	as5600_analog_published_sample_t published_angle_sample = {0};
 	const uint32_t speed_feedback_sample_period_us =
 			APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US *
 			(uint32_t)APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT;
@@ -521,12 +623,13 @@ int main(void)
 			.adc_full_scale = (uint16_t)APP_MOTOR_TEST_AS5600_ADC_FULL_SCALE,
 			.raw_sample_period_us = APP_MOTOR_TEST_ANGLE_ADC_SAMPLE_PERIOD_US,
 			.raw_samples_per_publish = APP_MOTOR_TEST_ANGLE_PUBLISH_RAW_SAMPLE_COUNT,
+			.wrap_correction_threshold_counts = (uint16_t)APP_MOTOR_TEST_ANGLE_HALF_TURN_COUNTS,
+			.max_plausible_delta_per_publish_counts =
+					(uint16_t)APP_MOTOR_TEST_ANGLE_MAX_PLAUSIBLE_DELTA_PER_PUBLISH_COUNTS,
 			.mechanical_angle_direction = (APP_MOTOR_TEST_SENSOR_DIRECTION < 0) ?
 					AS5600_ANALOG_DIRECTION_REVERSE :
 					AS5600_ANALOG_DIRECTION_FORWARD,
 	};
-	uint16_t mechanical_angle_u16 = 0u;
-
 	app_init_context(&app);
 	app_init_modules(&app,
 					 &motor_3pwm_cfg,
@@ -552,20 +655,23 @@ int main(void)
 		}
 
 		/* Consume one fixed-period published AS5600 mechanical-angle sample. */
-		if (as5600_analog_consume_published_sample(&app.as5600_analog_h, &mechanical_angle_u16))
+		if (as5600_analog_consume_published_sample(&app.as5600_analog_h, &published_angle_sample))
 		{
-			app_handle_consumed_angle_sample(&app, mechanical_angle_u16, now_us);
+			app_handle_consumed_angle_sample(&app, &published_angle_sample, now_us);
 		}
 
 		/* Run closed-loop speed controller updates at fixed control cadence. */
 		app_update_speed_controller(&app, APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS, now_ms);
+
+		/* Keep speed-error protection active without verbose fault dump machinery. */
+		app_check_speed_error_fault(&app, now_ms);
 
 		/* Advance alignment and apply q-only FOC actuation with controller-driven Uq. */
 		app_update_runtime_actuation(&app,
 									 APP_MOTOR_TEST_UPDATE_PERIOD_MS,
 									 now_ms);
 
-		/* Emit the reduced-rate UART log line. */
-		app_emit_angle_log(&app, now_ms);
+		/* Emit lightweight runtime telemetry at fixed low rate. */
+		app_emit_telemetry(&app, now_ms);
 	}
 }
