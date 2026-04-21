@@ -36,13 +36,14 @@
 /* Speed-feedback LPF time constant tau (larger tau => smoother, smaller tau => faster). */
 #define APP_MOTOR_TEST_SPEED_FEEDBACK_FILTER_TIME_CONSTANT_MS       30u
 /* Speed PI gains use Q15 fixed-point on mrpm input and permyriad output. */
-#define APP_MOTOR_TEST_SPEED_PI_KP_Q15                              2048
+#define APP_MOTOR_TEST_SPEED_PI_KP_Q15                              2700u
 /* Ki is zero temporarily so the first closed-loop test runs in P-only mode. */
-#define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        0
+#define APP_MOTOR_TEST_SPEED_PI_KI_PER_S_Q15                        6000u
 #define APP_MOTOR_TEST_SPEED_PI_OUTPUT_LIMIT_PERMYRIAD              6000u
 #define APP_MOTOR_TEST_SPEED_PI_UPDATE_PERIOD_MS                    1u
-/* First tuning profile: unidirectional trapezoid 0 -> peak -> 0 (repeat). */
-#define APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM     300000
+/* First tuning profile: bidirectional trapezoid 0 -> +peak -> 0 -> -peak -> 0 (repeat). */
+#define APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM     500000
+/* Conservative symmetric ramp magnitude used for both positive and negative ramps. */
 #define APP_MOTOR_TEST_SPEED_PROFILE_ACCELERATION_MRPM_PER_S        300000
 #define APP_MOTOR_TEST_SPEED_PROFILE_ZERO_HOLD_MS                   500u
 #define APP_MOTOR_TEST_SPEED_PROFILE_PEAK_HOLD_MS                   1000u

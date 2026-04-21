@@ -40,9 +40,13 @@ extern usart2_handle_t USART2_H;
 
 typedef enum app_speed_profile_phase_t {
 	APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START = 0,
-	APP_SPEED_PROFILE_PHASE_RAMP_UP,
-	APP_SPEED_PROFILE_PHASE_PEAK_HOLD,
-	APP_SPEED_PROFILE_PHASE_RAMP_DOWN,
+	APP_SPEED_PROFILE_PHASE_RAMP_UP_POSITIVE,
+	APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE,
+	APP_SPEED_PROFILE_PHASE_RAMP_DOWN_TO_ZERO_POSITIVE,
+	APP_SPEED_PROFILE_PHASE_ZERO_HOLD_MID,
+	APP_SPEED_PROFILE_PHASE_RAMP_DOWN_NEGATIVE,
+	APP_SPEED_PROFILE_PHASE_PEAK_HOLD_NEGATIVE,
+	APP_SPEED_PROFILE_PHASE_RAMP_UP_TO_ZERO_NEGATIVE,
 	APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END,
 } app_speed_profile_phase_t;
 
@@ -161,7 +165,7 @@ static void app_init_context(app_context_t *app)
 	app->last_speed_pi_update_ms = 0u;
 	app->alignment_start_ms = 0u;
 	app->applied_uq_command_permyriad = 0u;
-	/* Keep final target field as the profile peak for telemetry and fault arming semantics. */
+	/* Keep this fixed peak target field for application-level compatibility. */
 	app->speed_control_target_mechanical_speed_mrpm =
 			APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
 	app->current_speed_control_reference_mrpm = 0;
@@ -225,15 +229,31 @@ static uint32_t app_speed_profile_phase_duration_ms(app_speed_profile_phase_t ph
 	{
 		return APP_MOTOR_TEST_SPEED_PROFILE_ZERO_HOLD_MS;
 	}
-	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP)
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP_POSITIVE)
 	{
 		return app_speed_profile_ramp_duration_ms();
 	}
-	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD)
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE)
 	{
 		return APP_MOTOR_TEST_SPEED_PROFILE_PEAK_HOLD_MS;
 	}
-	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN)
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_TO_ZERO_POSITIVE)
+	{
+		return app_speed_profile_ramp_duration_ms();
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_MID)
+	{
+		return APP_MOTOR_TEST_SPEED_PROFILE_ZERO_HOLD_MS;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_NEGATIVE)
+	{
+		return app_speed_profile_ramp_duration_ms();
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_NEGATIVE)
+	{
+		return APP_MOTOR_TEST_SPEED_PROFILE_PEAK_HOLD_MS;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP_TO_ZERO_NEGATIVE)
 	{
 		return app_speed_profile_ramp_duration_ms();
 	}
@@ -256,14 +276,19 @@ static int32_t app_speed_profile_phase_reference_mrpm(app_speed_profile_phase_t 
 	int32_t peak_mrpm = APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
 
 	if ((phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START) ||
+		(phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_MID) ||
 		(phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END))
 	{
 		return 0;
 	}
 
-	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD)
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE)
 	{
 		return peak_mrpm;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_NEGATIVE)
+	{
+		return -peak_mrpm;
 	}
 
 	/* ramp_delta_mrpm = accel_mrpm_per_s * elapsed_ms / 1000. */
@@ -272,7 +297,7 @@ static int32_t app_speed_profile_phase_reference_mrpm(app_speed_profile_phase_t 
 			(int64_t)elapsed_phase_ms;
 	ramp_delta_mrpm = (int32_t)(ramp_delta_num / 1000LL);
 
-	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP)
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP_POSITIVE)
 	{
 		if (ramp_delta_mrpm > peak_mrpm)
 		{
@@ -280,12 +305,25 @@ static int32_t app_speed_profile_phase_reference_mrpm(app_speed_profile_phase_t 
 		}
 		return ramp_delta_mrpm;
 	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_NEGATIVE)
+	{
+		if (ramp_delta_mrpm > peak_mrpm)
+		{
+			ramp_delta_mrpm = peak_mrpm;
+		}
+		return -ramp_delta_mrpm;
+	}
 
 	if (ramp_delta_mrpm > peak_mrpm)
 	{
 		ramp_delta_mrpm = peak_mrpm;
 	}
-	return peak_mrpm - ramp_delta_mrpm;
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_TO_ZERO_POSITIVE)
+	{
+		return peak_mrpm - ramp_delta_mrpm;
+	}
+
+	return -peak_mrpm + ramp_delta_mrpm;
 }
 
 /**
@@ -296,13 +334,23 @@ static int32_t app_speed_profile_phase_reference_mrpm(app_speed_profile_phase_t 
  */
 static int32_t app_speed_profile_phase_target_mrpm(app_speed_profile_phase_t phase)
 {
+	int32_t peak_mrpm = APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
+
 	if ((phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START) ||
+		(phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_MID) ||
 		(phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END))
 	{
 		return 0;
 	}
 
-	return APP_MOTOR_TEST_SPEED_PROFILE_PEAK_MECHANICAL_SPEED_MRPM;
+	if ((phase == APP_SPEED_PROFILE_PHASE_RAMP_UP_POSITIVE) ||
+		(phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE) ||
+		(phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_TO_ZERO_POSITIVE))
+	{
+		return peak_mrpm;
+	}
+
+	return -peak_mrpm;
 }
 
 /**
@@ -315,17 +363,33 @@ static app_speed_profile_phase_t app_speed_profile_next_phase(app_speed_profile_
 {
 	if (phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_START)
 	{
-		return APP_SPEED_PROFILE_PHASE_RAMP_UP;
+		return APP_SPEED_PROFILE_PHASE_RAMP_UP_POSITIVE;
 	}
-	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP)
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP_POSITIVE)
 	{
-		return APP_SPEED_PROFILE_PHASE_PEAK_HOLD;
+		return APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE;
 	}
-	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD)
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE)
 	{
-		return APP_SPEED_PROFILE_PHASE_RAMP_DOWN;
+		return APP_SPEED_PROFILE_PHASE_RAMP_DOWN_TO_ZERO_POSITIVE;
 	}
-	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN)
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_TO_ZERO_POSITIVE)
+	{
+		return APP_SPEED_PROFILE_PHASE_ZERO_HOLD_MID;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_ZERO_HOLD_MID)
+	{
+		return APP_SPEED_PROFILE_PHASE_RAMP_DOWN_NEGATIVE;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_DOWN_NEGATIVE)
+	{
+		return APP_SPEED_PROFILE_PHASE_PEAK_HOLD_NEGATIVE;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_NEGATIVE)
+	{
+		return APP_SPEED_PROFILE_PHASE_RAMP_UP_TO_ZERO_NEGATIVE;
+	}
+	if (phase == APP_SPEED_PROFILE_PHASE_RAMP_UP_TO_ZERO_NEGATIVE)
 	{
 		return APP_SPEED_PROFILE_PHASE_ZERO_HOLD_END;
 	}
@@ -334,7 +398,7 @@ static app_speed_profile_phase_t app_speed_profile_next_phase(app_speed_profile_
 }
 
 /**
- * @brief Reset the unidirectional tuning profile at one runtime timestamp.
+ * @brief Reset the bidirectional tuning profile at one runtime timestamp.
  *
  * @param app Pointer to application runtime context.
  * @param now_ms Current time in milliseconds.
@@ -349,7 +413,7 @@ static void app_speed_profile_reset(app_context_t *app, uint32_t now_ms)
 }
 
 /**
- * @brief Update the unidirectional trapezoidal speed profile state.
+ * @brief Update the bidirectional trapezoidal speed profile state.
  *
  * @param app Pointer to application runtime context.
  * @param now_ms Current time in milliseconds.
@@ -381,6 +445,18 @@ static void app_speed_profile_update(app_context_t *app, uint32_t now_ms)
 }
 
 /**
+ * @brief Return whether one profile phase is a steady peak-hold phase.
+ *
+ * @param phase Profile phase.
+ * @return true for positive/negative peak-hold phases, false otherwise.
+ */
+static bool app_speed_profile_is_peak_hold_phase(app_speed_profile_phase_t phase)
+{
+	return ((phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_POSITIVE) ||
+			(phase == APP_SPEED_PROFILE_PHASE_PEAK_HOLD_NEGATIVE));
+}
+
+/**
  * @brief Check if the runtime speed-error fault trigger is armed.
  *
  * @param app Pointer to application runtime context.
@@ -388,11 +464,16 @@ static void app_speed_profile_update(app_context_t *app, uint32_t now_ms)
  */
 static bool app_speed_error_fault_is_armed(const app_context_t *app)
 {
+	int32_t active_phase_target_mrpm = 0;
+
 	if (app == NULL) return false;
 	if (app->alignment_done == false) return false;
 	if (app->motor_h.status.has_valid_mechanical_speed == false) return false;
-	if (app->current_speed_control_reference_mrpm !=
-		app->speed_control_target_mechanical_speed_mrpm) return false;
+
+	/* Arm only in steady peak-hold phases after the reference reaches that phase target. */
+	if (app_speed_profile_is_peak_hold_phase(app->speed_profile_phase) == false) return false;
+	active_phase_target_mrpm = app_speed_profile_phase_target_mrpm(app->speed_profile_phase);
+	if (app->current_speed_control_reference_mrpm != active_phase_target_mrpm) return false;
 
 	return true;
 }
@@ -610,7 +691,7 @@ static void app_update_speed_controller(app_context_t *app,
 	/* Update closed-loop speed control in P-only mode (Ki=0 by config). */
 	if ((now_ms - app->last_speed_pi_update_ms) >= speed_pi_update_period_ms)
 	{
-		/* First tuning profile: unidirectional trapezoid 0 -> peak -> 0, then repeat. */
+		/* First bidirectional validation profile: conservative symmetric 0 -> +peak -> 0 -> -peak -> 0 cycle. */
 		app_speed_profile_update(app, now_ms);
 
 		/* Use the current profile reference for the active PI update. */
@@ -678,7 +759,7 @@ static void app_update_runtime_actuation(app_context_t *app,
 			{
 				app_fatal_stop(app, "MSPI", "reset failed");
 			}
-			/* Start the unidirectional tuning profile from the first zero-hold phase. */
+			/* Start the bidirectional tuning profile from the first zero-hold phase. */
 			app_speed_profile_reset(app, now_ms);
 			app->applied_uq_command_permyriad = 0u;
 			app->alignment_done = true;
